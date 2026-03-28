@@ -322,7 +322,7 @@ class PhysicalBlockParty:
                     self.board[y][x] = WHITE
 
     def draw_branding(self, t):
-        """Deseneaza textul rotit la 180 de grade, ca sa inceapa din partea opusa."""
+        """Deseneaza textul LedITall rotit la 90 grade, citibil pe axa lunga (32 placi)"""
         for y in range(BOARD_HEIGHT):
             for x in range(BOARD_WIDTH):
                 self.board[y][x] = (10, 0, 20) 
@@ -335,9 +335,8 @@ class PhysicalBlockParty:
                 for r_idx, row in enumerate(glyph):
                     for c_idx, pixel in enumerate(row):
                         if pixel == '#':
-                            # Transformare 180 grade: (X, Y) -> (MaxX - X, MaxY - Y)
-                            board_y = 31 - (curr_y + c_idx)
-                            board_x = 5 + r_idx 
+                            board_y = curr_y + c_idx
+                            board_x = 10 - r_idx # Corectat in oglinda
                             
                             wave = (math.sin(board_y * 0.5 + board_x * 0.5 - t * 10.0) + 1) / 2
                             intensity = 0.4 + (wave * 0.6)
