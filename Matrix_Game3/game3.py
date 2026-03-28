@@ -35,8 +35,9 @@ CYAN = (0, 255, 255)
 MAGENTA = (255, 0, 255)
 ORANGE = (255, 165, 0)
 PURPLE = (128, 0, 128)
+BROWN = (121, 85, 72) 
 
-COLORS_LIST = [RED, GREEN, BLUE, YELLOW, CYAN, MAGENTA, ORANGE, PURPLE]
+COLORS_LIST = [BROWN, GREEN, BLUE, YELLOW, CYAN, MAGENTA, ORANGE, PURPLE]
 
 # --- Font pentru Numaratoare (5x7 scalat x2) ---
 DIGITS = {
@@ -61,31 +62,64 @@ TEXT_BRAND = "LedITall"
 class SoundManager:
     def __init__(self):
         self.enabled = PYGAME_AVAILABLE
+        
+        # 1. Definim folderul exact unde se afla fisierul game3.py
+        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        
         if self.enabled:
             pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
+            
+            # 2. Generam fisierele in acest folder
             self._generate_sounds()
-            self.snd_tick = pygame.mixer.Sound("tick.wav")
-            self.snd_error = pygame.mixer.Sound("error.wav")
-            self.snd_win = pygame.mixer.Sound("win.wav")
-            self.snd_start = pygame.mixer.Sound("start.wav")
+            
+            # 3. Le incarcam tot din acest folder
+            self.snd_tick = pygame.mixer.Sound(os.path.join(self.base_dir, "tick.wav"))
+            self.snd_error = pygame.mixer.Sound(os.path.join(self.base_dir, "error.wav"))
+            self.snd_win = pygame.mixer.Sound(os.path.join(self.base_dir, "win.wav"))
+            self.snd_start = pygame.mixer.Sound(os.path.join(self.base_dir, "start.wav"))
+            
+            try:
+                bgm_path = os.path.join(self.base_dir, "bgm.wav")
+                pygame.mixer.music.load(bgm_path)
+                pygame.mixer.music.set_volume(0.3) 
+            except:
+                print("Eroare la incarcarea bgm.wav")
 
     def _generate_sounds(self):
         import wave, struct
+        
         def make_wav(name, freq, duration, volume=0.5):
-            if os.path.exists(name): return
+            filepath = os.path.join(self.base_dir, name) 
+            if os.path.exists(filepath): return
             sample_rate = 44100
-            with wave.open(name, 'w') as f:
+            with wave.open(filepath, 'w') as f:
                 f.setnchannels(1)
                 f.setsampwidth(2)
                 f.setframerate(sample_rate)
                 for i in range(int(sample_rate * duration)):
                     value = int(volume * 32767.0 * math.sin(2.0 * math.pi * freq * i / sample_rate))
                     f.writeframesraw(struct.pack('<h', value))
+                    
+        def make_bgm(name):
+            filepath = os.path.join(self.base_dir, name) 
+            if os.path.exists(filepath): return
+            sample_rate = 44100
+            with wave.open(filepath, 'w') as f:
+                f.setnchannels(1)
+                f.setsampwidth(2)
+                f.setframerate(sample_rate)
+                notes = [220, 0, 277, 0, 330, 0, 277, 0] 
+                for freq in notes:
+                    for i in range(int(sample_rate * 0.125)): 
+                        if freq == 0: value = 0
+                        else: value = int(0.2 * 32767.0 * math.sin(2.0 * math.pi * freq * i / sample_rate))
+                        f.writeframesraw(struct.pack('<h', value))
         
         make_wav("tick.wav", 1000, 0.05)   
         make_wav("error.wav", 150, 0.8)    
         make_wav("win.wav", 600, 0.4)      
         make_wav("start.wav", 400, 0.8)    
+        make_bgm("bgm.wav")
 
     def play(self, name):
         if not self.enabled: return
@@ -96,10 +130,33 @@ class SoundManager:
             elif name == 'start': self.snd_start.play()
         except: pass
 
+    def play_bgm(self):
+        """Porneste muzica de fundal pe repeat"""
+        if not self.enabled: return
+        try:
+            pygame.mixer.music.play(-1) 
+        except: pass
+
+    def stop_bgm(self):
+        """Opreste muzica de fundal"""
+        if not self.enabled: return
+        try:
+            pygame.mixer.music.stop()
+        except: pass
+
+# --- Helper Logic ---
+def blocks_touch(b1, b2):
+    x1, y1, w1, h1 = b1
+    x2, y2, w2, h2 = b2
+    return not (x1 + w1 < x2 or x2 + w2 < x1 or y1 + h1 < y2 or y2 + h2 < y1)
+
+
 # --- Logica Jocului Fizic ---
 class PhysicalBlockParty:
     def __init__(self):
         self.board = [[BLACK for _ in range(BOARD_WIDTH)] for _ in range(BOARD_HEIGHT)]
+        # Harta paralela care tine minte ID-ul fiecarui blob
+        self.blob_board = [[-1 for _ in range(BOARD_WIDTH)] for _ in range(BOARD_HEIGHT)] 
         self.running = True
         self.lock = threading.RLock()
         self.audio = SoundManager()
@@ -119,6 +176,9 @@ class PhysicalBlockParty:
         self.last_second_beep = 0
         self.last_seq_sec = 0
         self.last_printed_minute = -1
+        
+        # Variabila pentru a retine DOAR formele (blobs) calcate gresit
+        self.error_blobs = []
 
     def initiate_start_sequence(self):
         with self.lock:
@@ -126,6 +186,7 @@ class PhysicalBlockParty:
             self.sequence_timer = 3.0 
             self.last_tick_time = time.time()
             self.last_seq_sec = 6
+            self.audio.play_bgm() # <-- PORNESTE MUZICA AICI
             print("\n" + "="*40)
             print("✨ PREGATIRE JOC... BRANDING INIT ✨")
             print("="*40)
@@ -159,34 +220,30 @@ class PhysicalBlockParty:
     def generate_blocks(self):
         """Genereaza forme organice asigurate la max 40 LED-uri, fara goluri, fara 1x1"""
         with self.lock:
-            # Grila Macro (1 unitate = 2x2 LED-uri)
             MACRO_W = 8
             MACRO_H = 16
             blob_grid = [[-1 for _ in range(MACRO_W)] for _ in range(MACRO_H)]
             blobs = []
 
-            # Dificultate in functie de runda
             if self.round <= 4:
-                min_s, max_s = 6, 10 # 24 - 40 LED-uri
+                min_s, max_s = 6, 10
                 target_count = random.randint(4, 6)
             elif self.round <= 8:
-                min_s, max_s = 4, 6  # 16 - 24 LED-uri
+                min_s, max_s = 4, 6
                 target_count = random.randint(4, 6)
             else:
-                min_s, max_s = 2, 3  # 8 - 12 LED-uri
+                min_s, max_s = 2, 3
                 target_count = random.randint(3, 5)
 
-            # 1. GENERARE FORME ORGANICE (Random BFS)
             for y in range(MACRO_H):
                 for x in range(MACRO_W):
-                    if blob_grid[y][x] == -1: # Spatiu liber
+                    if blob_grid[y][x] == -1: 
                         target_size = random.randint(min_s, max_s)
                         blob_id = len(blobs)
                         current_blob = []
                         
                         q = [(y, x)]
                         while q and len(current_blob) < target_size:
-                            # Scoatem random ca sa fie margini organice, nu patrate
                             idx = random.randint(0, len(q)-1)
                             cy, cx = q.pop(idx)
                             
@@ -194,7 +251,6 @@ class PhysicalBlockParty:
                                 blob_grid[cy][cx] = blob_id
                                 current_blob.append((cy, cx))
                                 
-                                # Adaugam vecinii in coada
                                 for dy, dx in [(-1,0), (1,0), (0,-1), (0,1)]:
                                     ny, nx = cy+dy, cx+dx
                                     if 0 <= ny < MACRO_H and 0 <= nx < MACRO_W:
@@ -203,7 +259,6 @@ class PhysicalBlockParty:
                                             
                         blobs.append(current_blob)
 
-            # 2. GRAFUL DE ADIACENTA (Cine atinge pe cine?)
             adj = {i: set() for i in range(len(blobs))}
             for y in range(MACRO_H):
                 for x in range(MACRO_W):
@@ -222,7 +277,6 @@ class PhysicalBlockParty:
             wrong_colors = [c for c in COLORS_LIST if c != self.target_color]
             blob_colors = {}
             
-            # 3. SELECTAM FORMELE CORECTE (Ne asiguram ca NU se ating intre ele)
             target_blob_ids = []
             candidates = list(range(len(blobs)))
             random.shuffle(candidates)
@@ -235,30 +289,38 @@ class PhysicalBlockParty:
             for tid in target_blob_ids:
                 blob_colors[tid] = self.target_color
                 
-            # 4. COLORAM FORMELE GRESITE
-            # Algoritm de colorare graf: Un bloc nu are aceeasi culoare ca vecinii lui
             for i in range(len(blobs)):
                 if i in blob_colors:
                     continue
                 neighbor_colors = {blob_colors[n] for n in adj[i] if n in blob_colors}
                 avail = [c for c in wrong_colors if c not in neighbor_colors]
                 if not avail:
-                    avail = wrong_colors # Siguranta extrema
+                    avail = wrong_colors 
                 blob_colors[i] = random.choice(avail)
 
-            # 5. RANDARE PE MATRICEA FIZICA
-            # Fiecare macro-pixel genereaza 2x2 LED-uri reale
+            # --> MAPAM ATAT CULOAREA CAT SI ID-UL BLOCULUI PE PODEA <--
             for y in range(MACRO_H):
                 for x in range(MACRO_W):
-                    color = blob_colors[blob_grid[y][x]]
+                    bid = blob_grid[y][x]
+                    color = blob_colors[bid]
+                    
                     self.board[y*2][x*2] = color
+                    self.blob_board[y*2][x*2] = bid
+                    
                     self.board[y*2][x*2+1] = color
+                    self.blob_board[y*2][x*2+1] = bid
+                    
                     self.board[y*2+1][x*2] = color
+                    self.blob_board[y*2+1][x*2] = bid
+                    
                     self.board[y*2+1][x*2+1] = color
+                    self.blob_board[y*2+1][x*2+1] = bid
 
     def evaluate_floor(self):
+        self.audio.stop_bgm()
         wrong_tiles_pressed = 0
         correct_tiles_pressed = 0
+        wrong_blobs_stepped = set() # Acum retinem ID-ul unic al formei calcate gresit
         
         with self.lock:
             for i in range(512):
@@ -270,8 +332,11 @@ class PhysicalBlockParty:
                     x = c_raw if r_in_c % 2 == 0 else 15 - c_raw
                     y = (channel * 4) + r_in_c
                     
-                    if self.board[y][x] != self.target_color:
+                    stepped_color = self.board[y][x]
+                    
+                    if stepped_color != self.target_color:
                         wrong_tiles_pressed += 1
+                        wrong_blobs_stepped.add(self.blob_board[y][x])
                     else:
                         correct_tiles_pressed += 1
 
@@ -282,9 +347,9 @@ class PhysicalBlockParty:
                 print(f"📉 Penalizare: -{penalty} puncte. Scor actual: {self.score}")
                 self.audio.play('error')
                 
-                for y in range(BOARD_HEIGHT):
-                    for x in range(BOARD_WIDTH):
-                        self.board[y][x] = RED
+                # Salvam exact ID-urile pe care au calcat
+                self.error_blobs = list(wrong_blobs_stepped)
+                self.state = 'ROUND_OVER_ERROR'
             
             elif correct_tiles_pressed > 0:
                 self.score += 10
@@ -297,20 +362,23 @@ class PhysicalBlockParty:
                     for x in range(BOARD_WIDTH):
                         if self.board[y][x] != self.target_color:
                             self.board[y][x] = BLACK
+                self.state = 'ROUND_OVER'
             else:
                 print("⚠️ Nimeni nu a calcat pe nicio placa! 0 puncte.")
                 self.audio.play('error')
                 for y in range(BOARD_HEIGHT):
                     for x in range(BOARD_WIDTH):
                         self.board[y][x] = BLACK
+                self.state = 'ROUND_OVER'
 
-            self.state = 'ROUND_OVER'
             if self.global_timer > 3:
                 threading.Timer(3.0, self.start_round).start()
 
     def finish_game(self):
         with self.lock:
             self.state = 'GAME_FINISHED'
+            self.audio.stop_bgm() 
+            
             print("\n" + "🌟"*20)
             print("   TIMPUL A EXPIRAT! JOCUL S-A TERMINAT")
             print(f"   SCORUL VOSTRU FINAL ESTE: {self.score} PUNCTE")
@@ -398,6 +466,8 @@ class PhysicalBlockParty:
                 current_digit = int(math.ceil(self.sequence_timer))
                 
                 if current_digit != self.last_seq_sec and current_digit > 0:
+                    if current_digit == 3:          # <-- OPRESTE MUZICA FIX LA 3
+                        self.audio.stop_bgm()       # <-- OPRESTE MUZICA FIX LA 3
                     self.audio.play('tick')
                     self.last_seq_sec = current_digit
                     
@@ -443,17 +513,37 @@ class PhysicalBlockParty:
                 self.state = 'PLAYING'
                 self.round_timer = max(3.0, 8.5 - (self.round * 0.4))
                 self.last_second_beep = int(self.round_timer)
+                
+                self.audio.play_bgm()
+                
                 print("🏃 FUGEEETI catre culoare!")
 
         elif self.state == 'PLAYING':
             self.round_timer -= dt
             current_sec = int(self.round_timer)
-            if current_sec != self.last_second_beep and current_sec > 0:
+            
+            if current_sec != self.last_second_beep and current_sec > 0 and current_sec <= 3:
                 self.audio.play('tick')
+                
+            if current_sec != self.last_second_beep:
                 self.last_second_beep = current_sec
 
             if self.round_timer <= 0:
                 self.evaluate_floor()
+                
+        # --- Modificare: Licarim DOAR formele unice calcate gresit ---
+        elif self.state == 'ROUND_OVER_ERROR':
+            with self.lock:
+                t = time.time()
+                is_red = int(t * 6) % 2 == 0 
+                
+                for y in range(BOARD_HEIGHT):
+                    for x in range(BOARD_WIDTH):
+                        # Cautam daca ID-ul pixelului se afla in lista de erori
+                        if self.blob_board[y][x] in self.error_blobs:
+                            self.board[y][x] = RED if is_red else BLACK
+                        else:
+                            self.board[y][x] = BLACK
 
     def render(self):
         buffer = bytearray(FRAME_DATA_LENGTH)
