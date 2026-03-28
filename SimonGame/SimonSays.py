@@ -3,6 +3,7 @@ import time
 import threading
 import random
 import math
+import os
 
 # =========================================================
 #                      CONFIGURATION
@@ -10,15 +11,15 @@ import math
 def _load_config():
     return {
         "device_ip": "192.168.1.135",
-        "send_port": 4226,
+        "send_port": 4227,
         "recv_port": 4444,
-        "bind_ip": "0.0.0.0"
+        "bind_ip": "0.0.0.0",
     }
 
 CONFIG = _load_config()
 
 UDP_SEND_IP = CONFIG.get("device_ip", "192.168.1.135")
-UDP_SEND_PORT = CONFIG.get("send_port", 4226)
+UDP_SEND_PORT = CONFIG.get("send_port", 4227)
 UDP_LISTEN_PORT = CONFIG.get("recv_port", 4444)
 
 # =========================================================
@@ -30,6 +31,9 @@ FRAME_DATA_LENGTH = NUM_CHANNELS * LEDS_PER_CHANNEL * 3
 
 BOARD_WIDTH = 16
 BOARD_HEIGHT = 32
+
+GAME_DURATION_MINUTES = 3      # N minute tot jocul
+ROUND_DURATION_SECONDS = 6     # M secunde pentru fiecare rundă
 
 BLACK   = (0, 0, 0)
 WHITE   = (220, 220, 220)
@@ -47,177 +51,41 @@ BROWN   = (121, 85, 72)
 AQUA    = (80, 220, 255)
 GOLD    = (255, 200, 40)
 
-# Border LIME
 BORDER_COLOR = (120, 255, 0)
 
-# Culori intro
 WAVE_RED_1   = (70, 8, 16)
 WAVE_RED_2   = (105, 12, 30)
 WAVE_PINK_1  = (70, 18, 42)
 WAVE_PINK_2  = (110, 28, 58)
 
 FONT_3X5 = {
-    "L": [
-        "100",
-        "100",
-        "100",
-        "100",
-        "111",
-    ],
-    "e": [
-        "000",
-        "111",
-        "110",
-        "100",
-        "111",
-    ],
-    "d": [
-        "001",
-        "111",
-        "101",
-        "101",
-        "111",
-    ],
-    "I": [
-        "111",
-        "010",
-        "010",
-        "010",
-        "111",
-    ],
-    "T": [
-        "111",
-        "010",
-        "010",
-        "010",
-        "010",
-    ],
-    "a": [
-        "000",
-        "111",
-        "001",
-        "111",
-        "111",
-    ],
-    "l": [
-        "010",
-        "010",
-        "010",
-        "010",
-        "011",
-    ],
-    "space": [
-        "000",
-        "000",
-        "000",
-        "000",
-        "000",
-    ]
+    "L": ["100","100","100","100","111"],
+    "e": ["000","111","110","100","111"],
+    "d": ["001","111","101","101","111"],
+    "I": ["111","010","010","010","111"],
+    "T": ["111","010","010","010","010"],
+    "a": ["000","111","001","111","111"],
+    "l": ["010","010","010","010","011"],
+    "space": ["000","000","000","000","000"]
 }
 
-
-# Font 5x7 pentru text scrolling
 FONT_5X7 = {
-    "A": [
-        "01110",
-        "10001",
-        "10001",
-        "11111",
-        "10001",
-        "10001",
-        "10001",
-    ],
-    "D": [
-        "11110",
-        "10001",
-        "10001",
-        "10001",
-        "10001",
-        "10001",
-        "11110",
-    ],
-    "E": [
-        "11111",
-        "10000",
-        "10000",
-        "11110",
-        "10000",
-        "10000",
-        "11111",
-    ],
-    "I": [
-        "11111",
-        "00100",
-        "00100",
-        "00100",
-        "00100",
-        "00100",
-        "11111",
-    ],
-    "L": [
-        "10000",
-        "10000",
-        "10000",
-        "10000",
-        "10000",
-        "10000",
-        "11111",
-    ],
-    "T": [
-        "11111",
-        "00100",
-        "00100",
-        "00100",
-        "00100",
-        "00100",
-        "00100",
-    ],
-    "a": [
-        "00000",
-        "00000",
-        "01110",
-        "00001",
-        "01111",
-        "10001",
-        "01111",
-    ],
-    "d": [
-        "00001",
-        "00001",
-        "01111",
-        "10001",
-        "10001",
-        "10001",
-        "01111",
-    ],
-    "e": [
-        "00000",
-        "00000",
-        "01110",
-        "10001",
-        "11111",
-        "10000",
-        "01110",
-    ],
-    "l": [
-        "00100",
-        "00100",
-        "00100",
-        "00100",
-        "00100",
-        "00100",
-        "00011",
-    ],
-    "space": [
-        "000",
-        "000",
-        "000",
-        "000",
-        "000",
-        "000",
-        "000",
-    ]
+    "A": ["01110","10001","10001","11111","10001","10001","10001"],
+    "D": ["11110","10001","10001","10001","10001","10001","11110"],
+    "E": ["11111","10000","10000","11110","10000","10000","11111"],
+    "I": ["11111","00100","00100","00100","00100","00100","11111"],
+    "L": ["10000","10000","10000","10000","10000","10000","11111"],
+    "T": ["11111","00100","00100","00100","00100","00100","00100"],
+    "a": ["00000","00000","01110","00001","01111","10001","01111"],
+    "d": ["00001","00001","01111","10001","10001","10001","01111"],
+    "e": ["00000","00000","01110","10001","11111","10000","01110"],
+    "l": ["00100","00100","00100","00100","00100","00100","00011"],
+    "space": ["000","000","000","000","000","000","000"],
+    "1": ["00100","01100","00100","00100","00100","00100","01110"],
+    "2": ["01110","10001","00001","00010","00100","01000","11111"],
+    "3": ["11110","00001","00001","01110","00001","00001","11110"]
 }
+
 
 # =========================================================
 #                         SIMON GAME
@@ -232,22 +100,36 @@ class SimonGame:
         self.button_states = [False] * 512
         self.prev_button_states = [False] * 512
 
-        self.tiles = [
-            # Coloana stângă
-            {"id": 0,  "x": 3,  "y": 5,  "color": RED},
-            {"id": 1,  "x": 3,  "y": 9,  "color": GREEN},
-            {"id": 2,  "x": 3,  "y": 13, "color": BLUE},
-            {"id": 3,  "x": 3,  "y": 17, "color": YELLOW},
-            {"id": 4,  "x": 3,  "y": 21, "color": MAGENTA},
-            {"id": 5,  "x": 3,  "y": 25, "color": AQUA},
+        self.tile_w = 4
+        self.tile_h = 1
 
-            # Coloana dreaptă
-            {"id": 6,  "x": 11, "y": 5,  "color": CYAN},
-            {"id": 7,  "x": 11, "y": 9,  "color": ORANGE},
-            {"id": 8,  "x": 11, "y": 13, "color": PURPLE},
-            {"id": 9,  "x": 11, "y": 17, "color": PINK},
-            {"id": 10, "x": 11, "y": 21, "color": BROWN},
-            {"id": 11, "x": 11, "y": 25, "color": GOLD},
+        # 12 tile-uri, împărțite în 4 blocuri a câte 3:
+        # - stânga sus
+        # - dreapta sus
+        # - stânga jos
+        # - dreapta jos
+        #
+        # toate orientate din margine spre centru
+        self.tiles = [
+            # STÂNGA SUS
+            {"id": 0,  "x": 3,  "y": 4,  "w": 4, "h": 1, "color": RED},
+            {"id": 1,  "x": 3,  "y": 6,  "w": 4, "h": 1, "color": GREEN},
+            {"id": 2,  "x": 3,  "y": 8,  "w": 4, "h": 1, "color": BLUE},
+
+            # DREAPTA SUS
+            {"id": 3,  "x": 9, "y": 4,  "w": 4, "h": 1, "color": YELLOW},
+            {"id": 4,  "x": 9, "y": 6,  "w": 4, "h": 1, "color": MAGENTA},
+            {"id": 5,  "x": 9, "y": 8,  "w": 4, "h": 1, "color": AQUA},
+
+            # STÂNGA JOS
+            {"id": 6,  "x": 3,  "y": 23, "w": 4, "h": 1, "color": CYAN},
+            {"id": 7,  "x": 3,  "y": 25, "w": 4, "h": 1, "color": ORANGE},
+            {"id": 8,  "x": 3,  "y": 27, "w": 4, "h": 1, "color": PURPLE},
+
+            # DREAPTA JOS
+            {"id": 9,  "x": 9, "y": 23, "w": 4, "h": 1, "color": PINK},
+            {"id": 10, "x": 9, "y": 25, "w": 4, "h": 1, "color": BROWN},
+            {"id": 11, "x": 9, "y": 27, "w": 4, "h": 1, "color": GOLD},
         ]
 
         # stare joc
@@ -255,6 +137,14 @@ class SimonGame:
         self.player_index = 0
         self.level = 0
         self.state = "idle"
+
+        self.game_duration_sec = GAME_DURATION_MINUTES * 60
+        self.round_duration_sec = ROUND_DURATION_SECONDS
+
+        self.game_start_time = None
+        self.game_end_time = None
+        self.round_deadline = None
+        self.last_clock_visible_segments = -1
 
         # multiplayer / anti-repeat per tile
         self.pressed_tiles = set()   # tile-uri considerate apăsate activ
@@ -283,41 +173,38 @@ class SimonGame:
                 for x in range(BOARD_WIDTH):
                     if x < 2 or x >= BOARD_WIDTH - 2 or y < 2 or y >= BOARD_HEIGHT - 2:
                         self.board[y][x] = color
+    
+    def draw_sequence_background(self):
+        self.clear_board()
+        self.draw_border()
 
     def draw_tile(self, tile, color=None):
         c = color if color is not None else tile["color"]
         x0 = tile["x"]
         y0 = tile["y"]
+        w = tile.get("w", 2)
+        h = tile.get("h", 2)
 
         with self.lock:
-            for dy in range(2):
-                for dx in range(2):
+            for dy in range(h):
+                for dx in range(w):
                     x = x0 + dx
                     y = y0 + dy
                     if 0 <= x < BOARD_WIDTH and 0 <= y < BOARD_HEIGHT:
                         self.board[y][x] = c
 
     def draw_all_tiles(self, dim=False):
-        self.clear_board()
-        self.draw_border()
+        self.redraw_game_scene(dim=dim)
 
-        for tile in self.tiles:
-            if dim:
-                c = tuple(max(20, v // 5) for v in tile["color"])
-                self.draw_tile(tile, c)
-            else:
-                self.draw_tile(tile)
+    def flash_tile(self, tile_id, duration=0.25):
+        self.draw_sequence_background()
 
-    def flash_tile(self, tile_id, duration=0.4):
-        self.clear_board()
-        self.draw_border()
         tile = self.tiles[tile_id]
-        self.draw_tile(tile)
+        self.draw_tile(tile, tile["color"])
         time.sleep(duration)
 
-        self.clear_board()
-        self.draw_border()
-        time.sleep(0.16)
+        self.draw_sequence_background()
+        time.sleep(0.08)
 
     def flash_all(self, color=WHITE, times=2, on_time=0.18, off_time=0.12):
         for _ in range(times):
@@ -369,6 +256,100 @@ class SimonGame:
     def put_pixel(self, x, y, color):
         if 0 <= x < BOARD_WIDTH and 0 <= y < BOARD_HEIGHT:
             self.board[y][x] = color
+
+    def redraw_game_scene(self, dim=False):
+        self.clear_board()
+        self.draw_border()
+
+        for tile in self.tiles:
+            if dim:
+                c = tuple(max(20, v // 5) for v in tile["color"])
+                self.draw_tile(tile, c)
+            else:
+                self.draw_tile(tile)
+
+        if self.state == "input":
+            self.draw_clock_pie(
+                self.get_clock_segments_for_round(),
+                color=YELLOW,
+                off_color=BLACK
+            )
+
+    def draw_clock_pie(self, visible_segments=None, color=YELLOW, off_color=BLACK):
+        """
+        Ceas circular 10x10.
+        visible_segments:
+            8 = cerc complet
+            7 = lipsește 1/8
+            6 = lipsesc 2/8
+            ...
+            0 = gol complet
+
+        Feliile dispar în sens orar, pornind de sus (ora 12),
+        exact ca un pie chart / tort tăiat.
+        """
+        if visible_segments is None:
+            visible_segments = 8
+
+        visible_segments = max(0, min(8, visible_segments))
+        missing_segments = 8 - visible_segments
+
+        # top-left pentru un cerc 10x10 centrat pe board 16x32
+        origin_x = 3
+        origin_y = 11
+
+        # centru local al cercului 10x10
+        cx = 4.5
+        cy = 4.5
+        radius = 4.6
+
+        for ly in range(10):
+            for lx in range(10):
+                dx = lx - cx
+                dy = ly - cy
+                dist = math.sqrt(dx * dx + dy * dy)
+
+                # desenăm doar pixelii din cerc
+                if dist <= radius:
+                    # unghi:
+                    # 0° = sus
+                    # crește în sens orar
+                    angle = (math.degrees(math.atan2(dx, -dy)) + 360.0) % 360.0
+
+                    # 8 sectoare a câte 45°
+                    sector = int(angle // 45.0)  # 0..7
+
+                    # Scoatem feliile în ordine:
+                    # 0 = sus -> sus-dreapta -> dreapta -> ...
+                    px = origin_x + lx
+                    py = origin_y + ly
+
+                    if sector < missing_segments:
+                        self.put_pixel(px, py, off_color)
+                    else:
+                        self.put_pixel(px, py, color)
+
+    def get_round_time_left(self):
+        if self.round_deadline is None:
+            return self.round_duration_sec
+        return max(0.0, self.round_deadline - time.time())
+
+    def get_game_time_left(self):
+        if self.game_end_time is None:
+            return self.game_duration_sec
+        return max(0.0, self.game_end_time - time.time())
+
+    def get_clock_segments_for_round(self):
+        if self.state != "input":
+            return 8
+
+        total = self.get_round_duration()
+        left = self.get_round_time_left()
+
+        ratio = 0.0 if total <= 0 else (left / total)
+        segments = math.ceil(ratio * 8)
+
+        return max(0, min(8, segments))
 
     def get_char_bitmap(self, ch):
         if ch in FONT_5X7:
@@ -490,11 +471,76 @@ class SimonGame:
             self.draw_text_bitmap(bitmap_final, final_x, final_y, color=WHITE)
             time.sleep(0.05)
 
+        self.run_countdown()
         self.start_new_game()
         
     def play_intro_then_start_async(self):
         t = threading.Thread(target=self.run_intro, daemon=True)
         t.start()
+
+    def show_centered_text(self, text, color=WHITE, duration=0.7, with_wave=True):
+        bitmap = self.build_text_bitmap(text, spacing=1)
+        bitmap = self.rotate_bitmap_90(bitmap, clockwise=True)
+
+        w = len(bitmap[0])
+        h = len(bitmap)
+
+        x = (BOARD_WIDTH - w) // 2
+        y = (BOARD_HEIGHT - h) // 2
+
+        end_time = time.time() + duration
+        while time.time() < end_time and self.running:
+            if with_wave:
+                self.draw_wave_background(phase=time.time() * 2.4)
+            else:
+                self.clear_board()
+            self.draw_text_bitmap(bitmap, x, y, color=color)
+            time.sleep(0.05)
+
+    def run_countdown(self):
+        self.state = "countdown"
+
+        items = [
+            ("3", 0.75),
+            ("2", 0.75),
+            ("1", 0.75),
+        ]
+
+        start_time = time.time()
+        total = sum(duration for _, duration in items)
+
+        bitmap_cache = {}
+        elapsed_limits = []
+        acc = 0.0
+        for text, duration in items:
+            acc += duration
+            elapsed_limits.append((text, acc))
+
+            bitmap = self.build_text_bitmap(text, spacing=1)
+            bitmap = self.rotate_bitmap_90(bitmap, clockwise=True)
+            bitmap_cache[text] = bitmap
+
+        while self.running:
+            elapsed = time.time() - start_time
+            if elapsed >= total:
+                break
+
+            current_text = "1"
+            for text, limit in elapsed_limits:
+                if elapsed < limit:
+                    current_text = text
+                    break
+
+            bitmap = bitmap_cache[current_text]
+            w = len(bitmap[0])
+            h = len(bitmap)
+
+            x = (BOARD_WIDTH - w) // 2
+            y = (BOARD_HEIGHT - h) // 2
+
+            self.draw_wave_background(phase=time.time() * 2.4)
+            self.draw_text_bitmap(bitmap, x, y, color=WHITE)
+            time.sleep(0.05)
 
     # -----------------------------------------------------
     #                     GAME FLOW
@@ -504,9 +550,14 @@ class SimonGame:
         self.player_index = 0
         self.level = 0
         self.pressed_tiles.clear()
+
+        self.game_start_time = time.time()
+        self.game_end_time = self.game_start_time + self.game_duration_sec
+        self.round_deadline = None
+        self.last_clock_visible_segments = -1
+
         self.add_random_step()
         self.show_sequence_async()
-
     def add_random_step(self):
         self.sequence.append(random.randint(0, len(self.tiles) - 1))
         self.level = len(self.sequence)
@@ -520,14 +571,14 @@ class SimonGame:
         t.start()
 
     def run_show_sequence(self):
-        self.clear_board()
-        self.draw_border()
-        time.sleep(0.5)
+        self.draw_sequence_background()
+        time.sleep(0.18)
 
         for tile_id in self.sequence:
             self.flash_tile(tile_id, duration=0.42)
 
         self.draw_all_tiles(dim=False)
+        self.round_deadline = time.time() + self.get_round_duration()
         self.state = "input"
 
     def success_async(self):
@@ -536,38 +587,64 @@ class SimonGame:
         t.start()
 
     def run_success(self):
+        self.state = "success"
+        self.round_deadline = None
+        self.last_clock_visible_segments = -1
+
         self.flash_all(color=GREEN, times=2, on_time=0.18, off_time=0.12)
+
+        if self.get_game_time_left() <= 0:
+            self.end_game()
+            return
+
         self.add_random_step()
         self.show_sequence_async()
 
-    def repeat_sequence_async(self):
+    def end_game(self):
+        self.state = "game_over"
+
+        end_time = time.time() + 2.5
+        while time.time() < end_time and self.running:
+            self.clear_board()
+            self.draw_border()
+            self.draw_clock_pie(0, base_color=(60, 0, 0), active_color=RED)
+            time.sleep(0.06)
+
+        # dacă vrei să repornească automat:
+        self.run_countdown()
+        self.start_new_game()
+
+    def repeat_sequence_async(self, play_sound=True):
         self.state = "repeat"
-        t = threading.Thread(target=self.run_repeat_sequence, daemon=True)
+        t = threading.Thread(target=self.run_repeat_sequence, args=(play_sound,), daemon=True)
         t.start()
 
-    def run_repeat_sequence(self):
+    def run_repeat_sequence(self, play_sound=True):
+        self.state = "repeat"
+        self.round_deadline = None
+        self.last_clock_visible_segments = -1
+
         self.flash_all(color=RED, times=2, on_time=0.2, off_time=0.12)
         time.sleep(0.3)
-
-        # reîncepe același nivel, fără să pierzi secvența
         self.player_index = 0
         self.show_sequence_async()
-        
+
     # -----------------------------------------------------
     #                    INPUT HANDLING
     # -----------------------------------------------------
+
+    def get_round_duration(self):
+        """
+        Runda 1-2: 8 sec
+        De la runda 3: +3 sec per nivel
+        """
+        if self.level < 3:
+            return self.round_duration_sec
+        else:
+            return min(25, self.round_duration_sec + (self.level - 3) * 2)
     
     def tick(self):
-        for i in range(512):
-            is_pressed = self.button_states[i]
-            was_pressed = self.prev_button_states[i]
-
-            if is_pressed and not was_pressed:
-                self.handle_physical_press(i)
-
-            self.prev_button_states[i] = is_pressed
-
-        # eliberează doar tile-urile care NU mai au niciun LED apăsat din zona 2x2
+        # eliberare tile-uri
         to_release = []
         for tile_id in self.pressed_tiles:
             if not self.is_tile_currently_pressed(tile_id):
@@ -575,6 +652,23 @@ class SimonGame:
 
         for tile_id in to_release:
             self.pressed_tiles.discard(tile_id)
+
+        # timer total joc
+        if self.state in ("showing", "input", "success", "repeat"):
+            if self.game_end_time is not None and time.time() >= self.game_end_time:
+                self.end_game()
+                return
+
+        # timer rundă + update ceas DOAR în input
+        if self.state == "input":
+            if self.round_deadline is not None and time.time() >= self.round_deadline:
+                self.repeat_sequence_async(play_sound=False)
+                return
+
+            segs = self.get_clock_segments_for_round()
+            if segs != self.last_clock_visible_segments:
+                self.last_clock_visible_segments = segs
+                self.redraw_game_scene(dim=False)
 
     def handle_physical_press(self, led_idx):
         if self.state != "input":
@@ -586,14 +680,14 @@ class SimonGame:
         if tile_id is None:
             return
 
-        # dacă tile-ul este deja considerat apăsat, ignorăm
-        # până când este eliberat complet tot 2x2
         if tile_id in self.pressed_tiles:
             return
 
-        # marcăm tile-ul ca apăsat activ
         self.pressed_tiles.add(tile_id)
 
+        self.handle_game_input(tile_id)
+
+        # apoi pornește highlight-ul vizual
         t = threading.Thread(
             target=self.flash_pressed_tile_feedback,
             args=(tile_id,),
@@ -601,28 +695,29 @@ class SimonGame:
         )
         t.start()
 
-        self.handle_game_input(tile_id)
-
     def handle_game_input(self, tile_id):
         expected = self.sequence[self.player_index]
 
         if tile_id == expected:
             self.player_index += 1
             if self.player_index >= len(self.sequence):
+                self.state = "success"
+                self.round_deadline = None
                 self.success_async()
         else:
-            self.repeat_sequence_async()
+            self.state = "repeat"
+            self.round_deadline = None
+            self.repeat_sequence_async(play_sound=False)
 
     def flash_pressed_tile_feedback(self, tile_id):
-        self.draw_all_tiles(dim=False)
+        self.redraw_game_scene(dim=False)
         tile = self.tiles[tile_id]
 
-        brighter = tuple(min(255, c + 40) for c in tile["color"])
-        self.draw_tile(tile, brighter)
+        self.draw_tile(tile, WHITE)
         time.sleep(0.15)
 
         if self.state == "input":
-            self.draw_all_tiles(dim=False)
+            self.redraw_game_scene(dim=False)
 
     # -----------------------------------------------------
     #              HARDWARE INDEX -> X,Y MAPPING
@@ -663,7 +758,10 @@ class SimonGame:
         for tile in self.tiles:
             x0 = tile["x"]
             y0 = tile["y"]
-            if x0 <= x <= x0 + 1 and y0 <= y <= y0 + 1:
+            w = tile.get("w", 2)
+            h = tile.get("h", 2)
+
+            if x0 <= x < x0 + w and y0 <= y < y0 + h:
                 return tile["id"]
         return None
 
@@ -671,9 +769,11 @@ class SimonGame:
         tile = self.tiles[tile_id]
         x0 = tile["x"]
         y0 = tile["y"]
+        w = tile.get("w", 2)
+        h = tile.get("h", 2)
 
-        for dy in range(2):
-            for dx in range(2):
+        for dy in range(h):
+            for dx in range(w):
                 x = x0 + dx
                 y = y0 + dy
                 led_idx = self.xy_to_led_index(x, y)
@@ -858,13 +958,24 @@ class NetworkManager:
                 data, _ = self.sock_recv.recvfrom(2048)
 
                 if len(data) >= 1373 and data[0] == 0x88:
+                    newly_pressed = []
+
                     for c in range(8):
                         offset = 2 + (c * 171) + 1
                         ch_data = data[offset: offset + 64]
 
                         for i, val in enumerate(ch_data):
                             global_idx = (c * 64) + i
-                            self.game.button_states[global_idx] = (val == 0xCC)
+                            new_state = (val == 0xCC)
+                            old_state = self.game.button_states[global_idx]
+
+                            self.game.button_states[global_idx] = new_state
+
+                            if new_state and not old_state:
+                                newly_pressed.append(global_idx)
+
+                    for led_idx in newly_pressed:
+                        self.game.handle_physical_press(led_idx)
 
             except Exception:
                 time.sleep(0.001)
@@ -881,7 +992,8 @@ class NetworkManager:
 def game_thread_func(game):
     while game.running:
         game.tick()
-        time.sleep(0.01)
+        time.sleep(0.002)
+
 
 # =========================================================
 #                           MAIN
