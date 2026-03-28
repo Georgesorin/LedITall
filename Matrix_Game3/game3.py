@@ -157,48 +157,104 @@ class PhysicalBlockParty:
             print("👁️ Memorati culoarea!")
 
     def generate_blocks(self):
-        """Genereaza un grid de blocuri care mixeaza orizontale cu verticale fara a lasa goluri."""
+        """Genereaza forme organice asigurate la max 40 LED-uri, fara goluri, fara 1x1"""
         with self.lock:
-            blocks = [] 
-            
-            if self.round <= 4:
-                target_count = random.randint(6, 8)
-                for gy in range(8): 
-                    for gx in range(4): 
-                        blocks.append((gx * 4, gy * 4, 4, 4))
-                        
-            elif self.round <= 8:
-                target_count = random.randint(8, 12)
-                for gy in range(8): 
-                    for gx in range(4):
-                        px, py = gx * 4, gy * 4
-                        if random.choice([True, False]):
-                            blocks.append((px, py, 4, 2))
-                            blocks.append((px, py + 2, 4, 2))
-                        else:
-                            blocks.append((px, py, 2, 4))
-                            blocks.append((px + 2, py, 2, 4))
-                            
-            else:
-                target_count = random.randint(12, 18)
-                for gy in range(16): 
-                    for gx in range(8): 
-                        blocks.append((gx * 2, gy * 2, 2, 2))
+            # Grila Macro (1 unitate = 2x2 LED-uri)
+            MACRO_W = 8
+            MACRO_H = 16
+            blob_grid = [[-1 for _ in range(MACRO_W)] for _ in range(MACRO_H)]
+            blobs = []
 
-            total_blocks = len(blocks)
+            # Dificultate in functie de runda
+            if self.round <= 4:
+                min_s, max_s = 6, 10 # 24 - 40 LED-uri
+                target_count = random.randint(4, 6)
+            elif self.round <= 8:
+                min_s, max_s = 4, 6  # 16 - 24 LED-uri
+                target_count = random.randint(4, 6)
+            else:
+                min_s, max_s = 2, 3  # 8 - 12 LED-uri
+                target_count = random.randint(3, 5)
+
+            # 1. GENERARE FORME ORGANICE (Random BFS)
+            for y in range(MACRO_H):
+                for x in range(MACRO_W):
+                    if blob_grid[y][x] == -1: # Spatiu liber
+                        target_size = random.randint(min_s, max_s)
+                        blob_id = len(blobs)
+                        current_blob = []
+                        
+                        q = [(y, x)]
+                        while q and len(current_blob) < target_size:
+                            # Scoatem random ca sa fie margini organice, nu patrate
+                            idx = random.randint(0, len(q)-1)
+                            cy, cx = q.pop(idx)
+                            
+                            if blob_grid[cy][cx] == -1:
+                                blob_grid[cy][cx] = blob_id
+                                current_blob.append((cy, cx))
+                                
+                                # Adaugam vecinii in coada
+                                for dy, dx in [(-1,0), (1,0), (0,-1), (0,1)]:
+                                    ny, nx = cy+dy, cx+dx
+                                    if 0 <= ny < MACRO_H and 0 <= nx < MACRO_W:
+                                        if blob_grid[ny][nx] == -1:
+                                            q.append((ny, nx))
+                                            
+                        blobs.append(current_blob)
+
+            # 2. GRAFUL DE ADIACENTA (Cine atinge pe cine?)
+            adj = {i: set() for i in range(len(blobs))}
+            for y in range(MACRO_H):
+                for x in range(MACRO_W):
+                    b1 = blob_grid[y][x]
+                    if x + 1 < MACRO_W:
+                        b2 = blob_grid[y][x+1]
+                        if b1 != b2:
+                            adj[b1].add(b2)
+                            adj[b2].add(b1)
+                    if y + 1 < MACRO_H:
+                        b2 = blob_grid[y+1][x]
+                        if b1 != b2:
+                            adj[b1].add(b2)
+                            adj[b2].add(b1)
+
             wrong_colors = [c for c in COLORS_LIST if c != self.target_color]
+            blob_colors = {}
             
-            block_colors = [random.choice(wrong_colors) for _ in range(total_blocks)]
-            
-            target_indices = random.sample(range(total_blocks), min(target_count, total_blocks))
-            for idx in target_indices:
-                block_colors[idx] = self.target_color
+            # 3. SELECTAM FORMELE CORECTE (Ne asiguram ca NU se ating intre ele)
+            target_blob_ids = []
+            candidates = list(range(len(blobs)))
+            random.shuffle(candidates)
+            for c in candidates:
+                if not any(n in target_blob_ids for n in adj[c]):
+                    target_blob_ids.append(c)
+                if len(target_blob_ids) == target_count:
+                    break
+                    
+            for tid in target_blob_ids:
+                blob_colors[tid] = self.target_color
                 
-            for i, (bx, by, bw, bh) in enumerate(blocks):
-                color = block_colors[i]
-                for y in range(by, by + bh):
-                    for x in range(bx, bx + bw):
-                        self.board[y][x] = color
+            # 4. COLORAM FORMELE GRESITE
+            # Algoritm de colorare graf: Un bloc nu are aceeasi culoare ca vecinii lui
+            for i in range(len(blobs)):
+                if i in blob_colors:
+                    continue
+                neighbor_colors = {blob_colors[n] for n in adj[i] if n in blob_colors}
+                avail = [c for c in wrong_colors if c not in neighbor_colors]
+                if not avail:
+                    avail = wrong_colors # Siguranta extrema
+                blob_colors[i] = random.choice(avail)
+
+            # 5. RANDARE PE MATRICEA FIZICA
+            # Fiecare macro-pixel genereaza 2x2 LED-uri reale
+            for y in range(MACRO_H):
+                for x in range(MACRO_W):
+                    color = blob_colors[blob_grid[y][x]]
+                    self.board[y*2][x*2] = color
+                    self.board[y*2][x*2+1] = color
+                    self.board[y*2+1][x*2] = color
+                    self.board[y*2+1][x*2+1] = color
 
     def evaluate_floor(self):
         wrong_tiles_pressed = 0
@@ -266,12 +322,12 @@ class PhysicalBlockParty:
                     self.board[y][x] = WHITE
 
     def draw_branding(self, t):
-        """Deseneaza textul LedITall rotit la 90 grade, citibil pe axa lunga (32 placi)"""
+        """Deseneaza textul rotit la 180 de grade, ca sa inceapa din partea opusa."""
         for y in range(BOARD_HEIGHT):
             for x in range(BOARD_WIDTH):
-                self.board[y][x] = (10, 0, 20) # Fundal mov inchis subtil
+                self.board[y][x] = (10, 0, 20) 
 
-        curr_y = 2 # Incepem de la placa 2 (pentru a-l centra perfect pe 32)
+        curr_y = 2 
         for char in TEXT_BRAND:
             if char in FONT_LEDITALL:
                 glyph = FONT_LEDITALL[char]
@@ -279,9 +335,9 @@ class PhysicalBlockParty:
                 for r_idx, row in enumerate(glyph):
                     for c_idx, pixel in enumerate(row):
                         if pixel == '#':
-                            # Prin inversarea r_idx cu c_idx textul se scrie pe lungime
-                            board_y = curr_y + c_idx
-                            board_x = 10 - r_idx # Centram litera de inaltime 5 pe latimea camerei de 16
+                            # Transformare 180 grade: (X, Y) -> (MaxX - X, MaxY - Y)
+                            board_y = 31 - (curr_y + c_idx)
+                            board_x = 5 + r_idx 
                             
                             wave = (math.sin(board_y * 0.5 + board_x * 0.5 - t * 10.0) + 1) / 2
                             intensity = 0.4 + (wave * 0.6)
@@ -292,8 +348,6 @@ class PhysicalBlockParty:
                             
                             if 0 <= board_y < BOARD_HEIGHT and 0 <= board_x < BOARD_WIDTH:
                                 self.board[board_y][board_x] = (r, g, b)
-                
-                # Urmatoarea litera
                 curr_y += char_width + 1
 
     def tick(self):
