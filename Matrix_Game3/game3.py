@@ -45,6 +45,18 @@ DIGITS = {
     1: ["  #  ", " ##  ", "# #  ", "  #  ", "  #  ", "  #  ", "#####"]
 }
 
+# --- Font compact pentru LedITall pe orizontala ---
+FONT_LEDITALL = {
+    'L': ["#  ", "#  ", "#  ", "#  ", "###"],
+    'e': [" ##", "# #", "###", "#  ", "###"],
+    'd': ["  #", "  #", "###", "# #", "###"],
+    'I': ["###", " # ", " # ", " # ", "###"],
+    'T': ["###", " # ", " # ", " # ", " # "],
+    'a': [" ##", "  #", "###", "# #", "###"],
+    'l': ["#", "#", "#", "#", "#"]
+}
+TEXT_BRAND = "LedITall"
+
 # --- Audio Manager ---
 class SoundManager:
     def __init__(self):
@@ -110,12 +122,12 @@ class PhysicalBlockParty:
 
     def initiate_start_sequence(self):
         with self.lock:
-            self.state = 'START_SEQUENCE'
-            self.sequence_timer = 6.0 
+            self.state = 'BRANDING_SEQUENCE'
+            self.sequence_timer = 3.0 
             self.last_tick_time = time.time()
             self.last_seq_sec = 6
             print("\n" + "="*40)
-            print("✨ PREGATIRE JOC... START SEQUENCE INIT ✨")
+            print("✨ PREGATIRE JOC... BRANDING INIT ✨")
             print("="*40)
 
     def start_game_logic(self):
@@ -147,51 +159,41 @@ class PhysicalBlockParty:
     def generate_blocks(self):
         """Genereaza un grid de blocuri care mixeaza orizontale cu verticale fara a lasa goluri."""
         with self.lock:
-            blocks = [] # Lista va contine tuple de forma (x, y, latime, inaltime)
+            blocks = [] 
             
-            # 1. Definim impartirea blocurilor in functie de runda
             if self.round <= 4:
-                # Runda 1-4: Doar blocuri mari de 4x4
                 target_count = random.randint(6, 8)
-                for gy in range(8): # 32 / 4 = 8 randuri
-                    for gx in range(4): # 16 / 4 = 4 coloane
+                for gy in range(8): 
+                    for gx in range(4): 
                         blocks.append((gx * 4, gy * 4, 4, 4))
                         
             elif self.round <= 8:
-                # Runda 5-8: Mix de 4x2 si 2x4 (Parchet)
                 target_count = random.randint(8, 12)
                 for gy in range(8): 
                     for gx in range(4):
                         px, py = gx * 4, gy * 4
-                        # Decidem random orientarea pentru acest patrat de 4x4
                         if random.choice([True, False]):
-                            # Taiat in 2 Orizontale (4x2)
                             blocks.append((px, py, 4, 2))
                             blocks.append((px, py + 2, 4, 2))
                         else:
-                            # Taiat in 2 Verticale (2x4)
                             blocks.append((px, py, 2, 4))
                             blocks.append((px + 2, py, 2, 4))
                             
             else:
-                # Runda 9+: Mod Twister intens (2x2)
                 target_count = random.randint(12, 18)
-                for gy in range(16): # 32 / 2 = 16 randuri
-                    for gx in range(8): # 16 / 2 = 8 coloane
+                for gy in range(16): 
+                    for gx in range(8): 
                         blocks.append((gx * 2, gy * 2, 2, 2))
 
             total_blocks = len(blocks)
             wrong_colors = [c for c in COLORS_LIST if c != self.target_color]
             
-            # 2. Atribuim culori random pentru toate blocurile
             block_colors = [random.choice(wrong_colors) for _ in range(total_blocks)]
             
-            # 3. Suprascriem cateva cu culoarea CORECTA
             target_indices = random.sample(range(total_blocks), min(target_count, total_blocks))
             for idx in target_indices:
                 block_colors[idx] = self.target_color
                 
-            # 4. Desenam lista de blocuri pe podea
             for i, (bx, by, bw, bh) in enumerate(blocks):
                 color = block_colors[i]
                 for y in range(by, by + bh):
@@ -263,6 +265,37 @@ class PhysicalBlockParty:
                 for x in range(BOARD_WIDTH):
                     self.board[y][x] = WHITE
 
+    def draw_branding(self, t):
+        """Deseneaza textul LedITall rotit la 90 grade, citibil pe axa lunga (32 placi)"""
+        for y in range(BOARD_HEIGHT):
+            for x in range(BOARD_WIDTH):
+                self.board[y][x] = (10, 0, 20) # Fundal mov inchis subtil
+
+        curr_y = 2 # Incepem de la placa 2 (pentru a-l centra perfect pe 32)
+        for char in TEXT_BRAND:
+            if char in FONT_LEDITALL:
+                glyph = FONT_LEDITALL[char]
+                char_width = len(glyph[0])
+                for r_idx, row in enumerate(glyph):
+                    for c_idx, pixel in enumerate(row):
+                        if pixel == '#':
+                            # Prin inversarea r_idx cu c_idx textul se scrie pe lungime
+                            board_y = curr_y + c_idx
+                            board_x = 10 - r_idx # Centram litera de inaltime 5 pe latimea camerei de 16
+                            
+                            wave = (math.sin(board_y * 0.5 + board_x * 0.5 - t * 10.0) + 1) / 2
+                            intensity = 0.4 + (wave * 0.6)
+                            
+                            r = int(255 * intensity)
+                            g = int(50 * intensity)
+                            b = int(200 * intensity)
+                            
+                            if 0 <= board_y < BOARD_HEIGHT and 0 <= board_x < BOARD_WIDTH:
+                                self.board[board_y][board_x] = (r, g, b)
+                
+                # Urmatoarea litera
+                curr_y += char_width + 1
+
     def tick(self):
         if self.state == 'WAITING_TO_START' or self.state == 'GAME_FINISHED':
             return
@@ -270,6 +303,15 @@ class PhysicalBlockParty:
         now = time.time()
         dt = now - self.last_tick_time
         self.last_tick_time = now
+
+        if self.state == 'BRANDING_SEQUENCE':
+            self.sequence_timer -= dt
+            with self.lock:
+                self.draw_branding(time.time())
+            if self.sequence_timer <= 0:
+                self.state = 'START_SEQUENCE'
+                self.sequence_timer = 6.0 
+            return
 
         if self.state == 'START_SEQUENCE':
             self.sequence_timer -= dt
