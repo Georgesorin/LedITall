@@ -478,29 +478,38 @@ class PhysicalBlockParty:
                 current_digit = int(math.ceil(self.sequence_timer))
                 
                 if current_digit != self.last_seq_sec and current_digit > 0:
-                    if current_digit == 3:          # <-- OPRESTE MUZICA FIX LA 3
-                        self.audio.stop_bgm()       # <-- OPRESTE MUZICA FIX LA 3
+                    if current_digit == 3:          
+                        self.audio.stop_bgm()       
                     self.audio.play('tick')
                     self.last_seq_sec = current_digit
                     
                     with self.lock:
                         for y in range(BOARD_HEIGHT):
                             for x in range(BOARD_WIDTH):
-                                self.board[y][x] = BLACK
+                                self.board[y][x] = 10, 0, 20
                                 
                         if current_digit in DIGITS:
                             template = DIGITS[current_digit]
                             start_x, start_y = 3, 9
                             
+                            # Culoare diferita pentru fiecare cifra
+                            digit_color = WHITE
+                            if current_digit == 3:
+                                digit_color = MAGENTA
+                            elif current_digit == 2:
+                                digit_color = PINK
+                            elif current_digit == 1:
+                                digit_color = CYAN
+                                
                             for row_idx, row_str in enumerate(template):
                                 for col_idx, char in enumerate(row_str):
                                     if char == '#':
                                         px = start_x + col_idx * 2
                                         py = start_y + row_idx * 2
-                                        self.board[py][px] = WHITE
-                                        self.board[py][px+1] = WHITE
-                                        self.board[py+1][px] = WHITE
-                                        self.board[py+1][px+1] = WHITE
+                                        self.board[py][px] = digit_color
+                                        self.board[py][px+1] = digit_color
+                                        self.board[py+1][px] = digit_color
+                                        self.board[py+1][px+1] = digit_color
                                         
             if self.sequence_timer <= 0:
                 self.start_game_logic()
