@@ -406,13 +406,25 @@ class PhysicalBlockParty:
                             board_y = curr_y + c_idx
                             board_x = 10 - r_idx # Corectat in oglinda
                             
-                            wave = (math.sin(board_y * 0.5 + board_x * 0.5 - t * 10.0) + 1) / 2
-                            intensity = 0.4 + (wave * 0.6)
+                            ratio = board_y / 31.0
+                            if ratio < 0.5:
+                                p = ratio * 2.0
+                                r_base = int(255 + p * (138 - 255))
+                                g_base = int(20 + p * (43 - 20))
+                                b_base = int(147 + p * (226 - 147))
+                            else:
+                                p = (ratio - 0.5) * 2.0
+                                r_base = int(138 + p * (0 - 138))
+                                g_base = int(43 + p * (191 - 43))
+                                b_base = int(226 + p * (255 - 226))
+                                
+                            wave = (math.sin(board_x * 0.5 + board_y * 0.5 - t * 8.0) + 1) / 2
+                            # Lasam intensitatea putin mai sus ca textul sa ramana mereu lizibil
+                            intensity = 0.3 + (wave * 0.7) 
                             
-                            r = int(255 * intensity)
-                            g = int(50 * intensity)
-                            b = int(200 * intensity)
-                            
+                            r = int(r_base * intensity)
+                            g = int(g_base * intensity)
+                            b = int(b_base * intensity)
                             if 0 <= board_y < BOARD_HEIGHT and 0 <= board_x < BOARD_WIDTH:
                                 self.board[board_y][board_x] = (r, g, b)
                 curr_y += char_width + 1
