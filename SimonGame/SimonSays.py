@@ -256,9 +256,8 @@ class SimonGame:
         self.level = 0
         self.state = "idle"
 
-        # debounce / anti-repeat
-        self.last_pressed_tile = None
-        self.ignore_inputs_until_release = False
+        # multiplayer / anti-repeat per tile
+        self.pressed_tiles = set()   # tile-uri considerate apăsate activ
 
         # NU mai pornim jocul direct aici
         self.clear_board()
@@ -504,6 +503,7 @@ class SimonGame:
         self.sequence = []
         self.player_index = 0
         self.level = 0
+        self.pressed_tiles.clear()
         self.add_random_step()
         self.show_sequence_async()
 
@@ -514,7 +514,7 @@ class SimonGame:
     def show_sequence_async(self):
         self.state = "showing"
         self.player_index = 0
-        self.ignore_inputs_until_release = True
+        self.pressed_tiles.clear()
 
         t = threading.Thread(target=self.run_show_sequence, daemon=True)
         t.start()
@@ -540,19 +540,23 @@ class SimonGame:
         self.add_random_step()
         self.show_sequence_async()
 
-    def gameover_async(self):
-        self.state = "gameover"
-        t = threading.Thread(target=self.run_gameover, daemon=True)
+    def repeat_sequence_async(self):
+        self.state = "repeat"
+        t = threading.Thread(target=self.run_repeat_sequence, daemon=True)
         t.start()
 
-    def run_gameover(self):
-        self.flash_all(color=RED, times=3, on_time=0.2, off_time=0.12)
-        time.sleep(0.4)
-        self.start_new_game()
+    def run_repeat_sequence(self):
+        self.flash_all(color=RED, times=2, on_time=0.2, off_time=0.12)
+        time.sleep(0.3)
 
+        # reîncepe același nivel, fără să pierzi secvența
+        self.player_index = 0
+        self.show_sequence_async()
+        
     # -----------------------------------------------------
     #                    INPUT HANDLING
     # -----------------------------------------------------
+    
     def tick(self):
         for i in range(512):
             is_pressed = self.button_states[i]
@@ -563,15 +567,17 @@ class SimonGame:
 
             self.prev_button_states[i] = is_pressed
 
-        if not any(self.button_states):
-            self.ignore_inputs_until_release = False
-            self.last_pressed_tile = None
+        # eliberează doar tile-urile care NU mai au niciun LED apăsat din zona 2x2
+        to_release = []
+        for tile_id in self.pressed_tiles:
+            if not self.is_tile_currently_pressed(tile_id):
+                to_release.append(tile_id)
+
+        for tile_id in to_release:
+            self.pressed_tiles.discard(tile_id)
 
     def handle_physical_press(self, led_idx):
         if self.state != "input":
-            return
-
-        if self.ignore_inputs_until_release:
             return
 
         x, y = self.led_index_to_xy(led_idx)
@@ -580,13 +586,19 @@ class SimonGame:
         if tile_id is None:
             return
 
-        if tile_id == self.last_pressed_tile:
+        # dacă tile-ul este deja considerat apăsat, ignorăm
+        # până când este eliberat complet tot 2x2
+        if tile_id in self.pressed_tiles:
             return
 
-        self.last_pressed_tile = tile_id
-        self.ignore_inputs_until_release = True
+        # marcăm tile-ul ca apăsat activ
+        self.pressed_tiles.add(tile_id)
 
-        t = threading.Thread(target=self.flash_pressed_tile_feedback, args=(tile_id,), daemon=True)
+        t = threading.Thread(
+            target=self.flash_pressed_tile_feedback,
+            args=(tile_id,),
+            daemon=True
+        )
         t.start()
 
         self.handle_game_input(tile_id)
@@ -599,7 +611,7 @@ class SimonGame:
             if self.player_index >= len(self.sequence):
                 self.success_async()
         else:
-            self.gameover_async()
+            self.repeat_sequence_async()
 
     def flash_pressed_tile_feedback(self, tile_id):
         self.draw_all_tiles(dim=False)
@@ -630,6 +642,23 @@ class SimonGame:
         y = (channel * 4) + row_in_channel
         return x, y
 
+    def xy_to_led_index(self, x, y):
+        if not (0 <= x < BOARD_WIDTH and 0 <= y < BOARD_HEIGHT):
+            return None
+
+        channel = y // 4
+        if channel >= NUM_CHANNELS:
+            return None
+
+        row_in_channel = y % 4
+
+        if row_in_channel % 2 == 0:
+            idx_in_row = x
+        else:
+            idx_in_row = 15 - x
+
+        return channel * 64 + row_in_channel * 16 + idx_in_row
+
     def find_tile_by_xy(self, x, y):
         for tile in self.tiles:
             x0 = tile["x"]
@@ -638,7 +667,20 @@ class SimonGame:
                 return tile["id"]
         return None
 
-    # -----------------------------------------------------
+    def is_tile_currently_pressed(self, tile_id):
+        tile = self.tiles[tile_id]
+        x0 = tile["x"]
+        y0 = tile["y"]
+
+        for dy in range(2):
+            for dx in range(2):
+                x = x0 + dx
+                y = y0 + dy
+                led_idx = self.xy_to_led_index(x, y)
+                if led_idx is not None and self.button_states[led_idx]:
+                    return True
+        return False
+        # -----------------------------------------------------
     #                        RENDER
     # -----------------------------------------------------
     def render(self):
