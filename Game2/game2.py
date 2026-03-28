@@ -1,25 +1,34 @@
+import sys
+import subprocess
 import socket
 import time
 import threading
 import random
-import sys
 import os
 import colorsys
+
+# --- AUTO-INSTALL PYGAME ---
+def verifica_si_instaleaza(pachet):
+    try:
+        __import__(pachet)
+    except ImportError:
+        print(f"📦 Pachetul '{pachet}' nu este instalat. Îl instalez acum...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pachet])
+        print(f"✅ Pachetul '{pachet}' a fost instalat cu succes!")
+
+verifica_si_instaleaza('pygame')
+import pygame
 
 # --- FIX AUDIO WSL ---
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 os.environ['SDL_AUDIODRIVER'] = 'pulseaudio'
 
-try:
-    import pygame
-    PYGAME_AVAILABLE = True
-except ImportError:
-    PYGAME_AVAILABLE = False
-    print("Eroare: Pygame nu este instalat. Muzica nu va rula.")
+PYGAME_AVAILABLE = True
 
 # --- CONFIGURARE REȚEA ---
 UDP_SEND_IP = "127.0.0.1" 
-UDP_SEND_PORT = 4226
+UDP_SEND_PORT_MAIN = 4226    
+UDP_SEND_PORT_SCORE = 4227   
 UDP_LISTEN_PORT = 4444
 
 NUM_CHANNELS = 8
@@ -32,31 +41,41 @@ BOARD_HEIGHT = 32
 RED = (255, 0, 0)
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
+GREEN = (0, 255, 0)
+BLUE = (0, 0, 255)
 
-# --- CONFIGURARE JOC ---
-GAME_DURATION = 180 # Timpul total al unei sesiuni de joc
+# --- PLAYLIST & BPM ---
+SONG_DATA = {
+    "songs/saxobeat.mp3": {"bpm": 127, "name": "Mr. Saxobeat"},
+    "songs/dont_stop.mp3": {"bpm": 123, "name": "Don't Stop The Music"},
+    "songs/s_and_m.mp3": {"bpm": 128, "name": "S&M"},
+    "songs/everything.mp3": {"bpm": 129, "name": "Give Me Everything"},
+    "songs/promiscuous.mp3": {"bpm": 114, "name": "Promiscuous"}
+}
 
-# --- PLAYLIST ---
-SONG_LIST = [
-    "songs/dont_stop.mp3",
-    "songs/everything.mp3",
-    "songs/promiscuous.mp3",
-    "songs/s_and_m.mp3",
-    "songs/saxobeat.mp3"
-]
+BEAT_SCALER = 0.5 
 
 # --- MINI FONT 3x5 ---
 MINI_FONT = {
-    '3': [[1,1,1],[0,0,1],[1,1,1],[0,0,1],[1,1,1]],
-    '2': [[1,1,1],[0,0,1],[1,1,1],[1,0,0],[1,1,1]],
+    '0': [[1,1,1],[1,0,1],[1,0,1],[1,0,1],[1,1,1]],
     '1': [[0,1,0],[1,1,0],[0,1,0],[0,1,0],[1,1,1]],
+    '2': [[1,1,1],[0,0,1],[1,1,1],[1,0,0],[1,1,1]],
+    '3': [[1,1,1],[0,0,1],[1,1,1],[0,0,1],[1,1,1]],
+    '4': [[1,0,1],[1,0,1],[1,1,1],[0,0,1],[0,0,1]],
+    '5': [[1,1,1],[1,0,0],[1,1,1],[0,0,1],[1,1,1]],
+    '6': [[1,1,1],[1,0,0],[1,1,1],[1,0,1],[1,1,1]],
+    '7': [[1,1,1],[0,0,1],[0,0,1],[0,0,1],[0,0,1]],
+    '8': [[1,1,1],[1,0,1],[1,1,1],[1,0,1],[1,1,1]],
+    '9': [[1,1,1],[1,0,1],[1,1,1],[0,0,1],[1,1,1]],
+    'P': [[1,1,1],[1,0,1],[1,1,1],[1,0,0],[1,0,0]],
     'G': [[1,1,1],[1,0,0],[1,0,1],[1,0,1],[1,1,1]],
     'O': [[1,1,1],[1,0,1],[1,0,1],[1,0,1],[1,1,1]],
     'E': [[1,1,1],[1,0,0],[1,1,1],[1,0,0],[1,1,1]],
     'N': [[1,0,1],[1,1,1],[1,1,1],[1,0,1],[1,0,1]], 
     'X': [[1,0,1],[1,0,1],[0,1,0],[1,0,1],[1,0,1]],
     'T': [[1,1,1],[0,1,0],[0,1,0],[0,1,0],[0,1,0]],
-    'D': [[1,1,0],[1,0,1],[1,0,1],[1,0,1],[1,1,0]]
+    'D': [[1,1,0],[1,0,1],[1,0,1],[1,0,1],[1,1,0]],
+    ':': [[0,0,0],[0,1,0],[0,0,0],[0,1,0],[0,0,0]]
 }
 
 class SyncNote:
@@ -71,12 +90,11 @@ class SyncNote:
         self.x += speed
 
 class PianoTilesTzancaEdition:
-    def __init__(self):
+    def __init__(self, initial_song=None):
         self.running = True
         self.lock = threading.RLock()
         self.scores = [0] * 6
         
-        # Stările jocului: START_ANIM -> PLAYING <-> TRANSITION_ANIM -> END_ANIM
         self.state = "START_ANIM" 
         self.state_start_time = time.time()
         
@@ -84,42 +102,53 @@ class PianoTilesTzancaEdition:
         self.lane_starts = [1, 6, 11, 17, 22, 27]
         
         self.notes = []
-        self.start_time = 0 
-        self.last_song_start = 0 
+        self.current_song_start_time = 0 
         self.spawn_timer = time.time()
         self.last_tick = time.time()
         
         self.last_y_pos = [1] 
         self.button_states = [False] * 512
         self.prev_button_states = [False] * 512
+        
         self.current_song_name = "Pregătire..."
         self.chosen_song_path = None
+        self.current_spawn_interval = 0.8 
+        
+        # Salvăm alegerea utilizatorului
+        self.initial_song_choice = initial_song
 
-        if PYGAME_AVAILABLE:
-            try:
-                pygame.mixer.quit()
-                pygame.mixer.pre_init(44100, -16, 2, 512)
-                pygame.mixer.init()
-            except Exception as e: 
-                print(f"⚠ Eroare audio: {e}")
+        try:
+            pygame.mixer.quit()
+            pygame.mixer.pre_init(44100, -16, 2, 512)
+            pygame.mixer.init()
+        except Exception as e: 
+            print(f"⚠ Eroare audio: {e}")
 
     def start_music(self):
-        """Alege o piesă la întâmplare și o redă O SINGURĂ DATĂ."""
-        self.last_song_start = time.time()
-        if PYGAME_AVAILABLE:
-            available_songs = [s for s in SONG_LIST if os.path.exists(s)]
-            if available_songs:
-                # Evităm să punem aceeași piesă de două ori la rând dacă avem mai multe
+        self.current_song_start_time = time.time()
+        available_songs = [s for s in SONG_DATA.keys() if os.path.exists(s)]
+        
+        if available_songs:
+            # Dacă utilizatorul a ales o melodie la început și există
+            if self.initial_song_choice and self.initial_song_choice in available_songs:
+                self.chosen_song_path = self.initial_song_choice
+                self.initial_song_choice = None # O resetăm, astfel încât următoarea piesă să fie random
+            else:
                 choices = [s for s in available_songs if s != self.chosen_song_path]
                 if not choices: choices = available_songs
-                
                 self.chosen_song_path = random.choice(choices)
-                self.current_song_name = os.path.basename(self.chosen_song_path).replace('.mp3', '')
                 
-                pygame.mixer.music.load(self.chosen_song_path)
-                pygame.mixer.music.play(0) # 0 înseamnă că se redă o singură dată (nu pe repeat)
-            else:
-                self.current_song_name = "Nicio melodie"
+            song_info = SONG_DATA[self.chosen_song_path]
+            self.current_song_name = song_info["name"]
+            
+            beats_per_second = (song_info["bpm"] / 60.0) * BEAT_SCALER
+            self.current_spawn_interval = 1.0 / beats_per_second
+
+            pygame.mixer.music.load(self.chosen_song_path)
+            pygame.mixer.music.play(0) 
+        else:
+            self.current_song_name = "Lipsă Folder/Melodii"
+            self.current_spawn_interval = 0.8
 
     def tick(self):
         with self.lock:
@@ -131,51 +160,35 @@ class PianoTilesTzancaEdition:
                 elapsed_anim = now - self.state_start_time
                 if elapsed_anim >= 4.0: 
                     self.state = "PLAYING"
-                    self.start_time = now # Începe contorul principal de 180s
                     self.start_music()
-                return
-
-            if self.state == "END_ANIM":
                 return
 
             if self.state == "TRANSITION_ANIM":
                 elapsed_anim = now - self.state_start_time
-                if elapsed_anim >= 3.0: # 3 secunde de tranziție între piese
+                if elapsed_anim >= 3.0: 
                     self.state = "PLAYING"
                     self.start_music()
                 return
 
             if self.state == "PLAYING":
-                elapsed_total = now - self.start_time
-                
-                # 1. Verificăm dacă s-a terminat timpul total de joc
-                if elapsed_total >= GAME_DURATION:
-                    self.state = "END_ANIM"
-                    self.state_start_time = now
-                    if PYGAME_AVAILABLE: pygame.mixer.music.stop()
-                    return
-
-                # 2. Verificăm dacă melodia curentă s-a terminat natural
+                song_elapsed = now - self.current_song_start_time
                 song_ended = False
-                if PYGAME_AVAILABLE and self.chosen_song_path:
-                    # get_busy() returnează False când melodia se oprește
-                    if not pygame.mixer.music.get_busy():
+                
+                if self.chosen_song_path:
+                    if song_elapsed > 2.0 and not pygame.mixer.music.get_busy():
                         song_ended = True
                 else:
-                    # Fallback dacă nu e audio: schimbăm la fiecare 30 secunde
-                    if now - self.last_song_start > 30.0:
-                        song_ended = True
+                    if song_elapsed > 30.0: song_ended = True
 
                 if song_ended:
                     self.state = "TRANSITION_ANIM"
                     self.state_start_time = now
-                    self.notes.clear() # Curățăm tabla de joc pentru o tranziție curată
+                    self.notes.clear()
                     return
 
-                # --- Logica normală de mișcare a notelor ---
-                speed = 4.0 + (elapsed_total * 0.03) 
+                speed = 4.0 + (song_elapsed * 0.03) 
 
-                if now - self.spawn_timer > 0.7:
+                if now - self.spawn_timer > self.current_spawn_interval:
                     num_notes = random.randint(1, 2)
                     new_rel_y = []
                     for _ in range(num_notes):
@@ -231,13 +244,17 @@ class PianoTilesTzancaEdition:
 
     def display_status(self):
         if self.state == "PLAYING" or self.state == "TRANSITION_ANIM":
-            elapsed = time.time() - self.start_time
-            rem = max(0, GAME_DURATION - elapsed)
-            score_str = " | ".join([f"P{i+1}: {self.scores[i]}" for i in range(6)])
+            song_elapsed = time.time() - self.current_song_start_time
+            score_str = " ".join([f"P{i+1}:{self.scores[i]}" for i in range(6)])
+            nume = self.current_song_name[:10] + ".." if len(self.current_song_name) > 10 else self.current_song_name
+            st_text = "[Schimbare]" if self.state == "TRANSITION_ANIM" else f"[{nume}]"
             
-            st_text = "[Schimbare Melodie] " if self.state == "TRANSITION_ANIM" else f"[🎵 {self.current_song_name}] "
-            sys.stdout.write(f"\r{st_text} TIMP: {int(rem//60):02d}:{int(rem%60):02d} | {score_str}")
-            sys.stdout.flush()
+            out_str = f"\r{st_text} {int(song_elapsed//60):02d}:{int(song_elapsed%60):02d} | {score_str}"
+            
+            if not hasattr(self, 'last_out_str') or self.last_out_str != out_str:
+                sys.stdout.write(out_str.ljust(75))
+                sys.stdout.flush()
+                self.last_out_str = out_str
 
     def draw_text(self, buffer, text, start_x, start_y, color=WHITE):
         x_offset = start_x
@@ -274,18 +291,11 @@ class PianoTilesTzancaEdition:
                 return buffer
 
             if self.state == "TRANSITION_ANIM":
-                self.render_rainbow_bg(buffer, now * 3.0) # Curcubeu mai intens și rapid
-                self.draw_text(buffer, "NEXT", 1, 13, BLACK) # Textul NEXT centrat (aprox)
+                self.render_rainbow_bg(buffer, now * 3.0)
+                self.draw_text(buffer, "NEXT", 1, 13, BLACK) 
                 return buffer
 
-            if self.state == "END_ANIM":
-                self.render_rainbow_bg(buffer, now * 2.0)
-                self.draw_text(buffer, "END", 2, 13, BLACK) 
-                return buffer
-
-            # RENDER NORMAL (PLAYING)
             color_grid = RED
-            
             for y in range(BOARD_HEIGHT):
                 if y in self.horizontal_lines:
                     for x in range(BOARD_WIDTH):
@@ -299,6 +309,17 @@ class PianoTilesTzancaEdition:
                             if note.active_map[p][pix_idx]:
                                 y_final = self.lane_starts[p] + ry
                                 self.set_led(buffer, tx, y_final, note.color)
+        return buffer
+
+    def render_scores_screen(self):
+        buffer = bytearray(FRAME_DATA_LENGTH)
+        with self.lock:
+            colors = [WHITE, GREEN, BLUE, WHITE, GREEN, BLUE]
+            y_offset = 1
+            for i in range(6):
+                score_txt = f"P{i+1}:{self.scores[i]}"
+                self.draw_text(buffer, score_txt, 1, y_offset, colors[i])
+                y_offset += 5 
         return buffer
 
     def set_led(self, buffer, x, y, color):
@@ -323,9 +344,9 @@ class NetworkManager:
             self.sock_recv.bind(("0.0.0.0", UDP_LISTEN_PORT))
         except: pass
 
-    def send_packet(self, frame_data):
+    def send_packet(self, frame_data, target_port):
         self.sequence = (self.sequence + 1) & 0xFFFF
-        target = (UDP_SEND_IP, UDP_SEND_PORT)
+        target = (UDP_SEND_IP, target_port)
         self.sock_send.sendto(bytearray([0x75, 0x01, 0x02, 0x00, 0x08, 0x02, 0x00, 0x00, 0x33, 0x44, (self.sequence >> 8) & 0xFF, self.sequence & 0xFF, 0x00, 0x00, 0x00, 0x0E, 0x00]), target)
         fff0 = bytearray([0x75, 0x03, 0x04, 0x00, 0x19, 0x02, 0x00, 0x00, 0x88, 0x77, 0xFF, 0xF0, 0x00, 0x10]) + (bytearray([0x00, 0x40]) * 8) + bytearray([0x1E, 0x00])
         self.sock_send.sendto(fff0, target)
@@ -351,14 +372,54 @@ class NetworkManager:
 
     def run(self):
         threading.Thread(target=self.recv_loop, daemon=True).start()
-        print("\nJoc pornit! Animația de start rulează. Apasă Ctrl+C pentru a opri.")
+        print("\n▶ Jocul a început! Animația de start rulează pe panou.")
         while True:
             self.game.tick()
-            self.send_packet(self.game.render())
+            
+            game_frame = self.game.render()
+            self.send_packet(game_frame, UDP_SEND_PORT_MAIN)
+            
+            scores_frame = self.game.render_scores_screen()
+            self.send_packet(scores_frame, UDP_SEND_PORT_SCORE)
+            
             self.game.display_status()
             time.sleep(0.04)
 
+# --- MENIU DE START ---
+def select_song_menu():
+    available_songs = list(SONG_DATA.keys())
+    if not available_songs:
+        print("⚠ Eroare: Nu s-au găsit melodii configurate!")
+        return None
+
+    print("\n" + "="*40)
+    print(" 🎹 PIANO TILES - SELECTEAZĂ MELODIA 🎹")
+    print("="*40)
+    
+    for i, path in enumerate(available_songs):
+        print(f" {i + 1}. {SONG_DATA[path]['name']}")
+    
+    random_opt_idx = len(available_songs) + 1
+    print(f" {random_opt_idx}. Alege Aleatoriu (Surprinde-mă)")
+    print("="*40)
+
+    while True:
+        try:
+            alegere = int(input(f"Alege un număr (1-{random_opt_idx}): "))
+            if 1 <= alegere <= len(available_songs):
+                return available_songs[alegere - 1]
+            elif alegere == random_opt_idx:
+                return None # Returnăm None pentru random
+            else:
+                print(f"❌ Te rog să introduci un număr valid între 1 și {random_opt_idx}.")
+        except ValueError:
+            print("❌ Te rog să introduci doar cifre.")
+
 if __name__ == "__main__":
-    game = PianoTilesTzancaEdition()
+    # 1. Apelăm meniul chiar înainte să inițializăm jocul
+    melodie_aleasa = select_song_menu()
+    
+    # 2. Trimitem opțiunea mai departe către logica jocului
+    game = PianoTilesTzancaEdition(initial_song=melodie_aleasa)
     net = NetworkManager(game)
     net.run()
