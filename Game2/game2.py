@@ -8,15 +8,24 @@ import os
 import colorsys
 import math
 
-# --- AUTO-INSTALL PYGAME ---
-def verifica_si_instaleaza(pachet):
+# --- AUTO-INSTALL DEPENDENȚE ---
+def verifica_si_instaleaza(pachet, nume_import=None):
+    if nume_import is None:
+        nume_import = pachet
     try:
-        __import__(pachet)
+        __import__(nume_import)
     except ImportError:
+        print(f"Instalez {pachet}...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", pachet])
 
 verifica_si_instaleaza('pygame')
+verifica_si_instaleaza('yt-dlp', 'yt_dlp')
+verifica_si_instaleaza('librosa')
+verifica_si_instaleaza('soundfile') # Necesar uneori pentru librosa
+
 import pygame
+import yt_dlp
+import librosa
 
 # --- CONFIGURARE REȚEA & MATRICE
 UDP_SEND_IP        = "127.0.0.1"
@@ -411,6 +420,63 @@ class PianoTilesPro:
             off = idx * 24 + ch 
             buf[off], buf[off+8], buf[off+16] = col[1], col[0], col[2]
 
+
+# ════════════════════════════════════════════════════════════════════════
+# FUNCȚII AUXILIARE (SCOASE DIN CLASĂ)
+# ════════════════════════════════════════════════════════════════════════
+def proceseaza_melodie_online(cautare):
+    print(f"\n⏳ Caut pe YouTube: '{cautare}'...")
+    
+    if not os.path.exists('temp_songs'):
+        os.makedirs('temp_songs')
+        
+    cale_fisier = 'temp_songs/melodie_curenta.mp3'
+    if os.path.exists(cale_fisier):
+        try: os.remove(cale_fisier)
+        except: pass
+
+    # 1. Descărcarea
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': cale_fisier[:cale_fisier.rfind('.')] + '.%(ext)s',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+        'noplaylist': True,
+        'default_search': 'ytsearch1:',
+        'quiet': True,
+        'no_warnings': True
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            rezultat = ydl.extract_info(cautare, download=True)
+            titlu = rezultat['entries'][0]['title']
+            print(f"✅ Am descărcat: {titlu}")
+    except Exception as e:
+        print(f"❌ Eroare la descărcare: {e}")
+        return None
+
+    # 2. Analiza BPM cu Librosa
+    print("🧠 Analizez ritmul (BPM)... Te rog așteaptă (poate dura 10-20 secunde)...")
+    try:
+        # Încărcăm doar primele 45 de secunde pentru a grăbi procesul masiv
+        y, sr = librosa.load(cale_fisier, duration=45.0)
+        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+        
+        # Extragem valoarea numerică (librosa returnează uneori un array, alteori un float)
+        bpm = float(tempo[0]) if hasattr(tempo, '__iter__') else float(tempo)
+        bpm = round(bpm)
+        print(f"🎵 BPM Detectat: {bpm}")
+        
+        return {"path": cale_fisier, "name": titlu, "bpm": bpm}
+    except Exception as e:
+        print(f"❌ Eroare la analiza audio: {e}")
+        return None
+     
+
 # ════════════════════════════════════════════════════════════════════════
 # 5. REȚEA & PLAYLIST
 # ════════════════════════════════════════════════════════════════════════
@@ -480,12 +546,28 @@ def selecteaza_playlist():
 if __name__ == "__main__":
     try:
         print("╔══════════════════════════════════════╗")
-        print("║   Piano Tiles Pro - Pink Text Ed.    ║")
+        print("║  Piano Tiles Pro - Online Edition    ║")
         print("╚══════════════════════════════════════╝")
+        
         n = int(input("\nNumăr jucători (1-6): "))
-        my_playlist = selecteaza_playlist()
-        game = PianoTilesPro(n, playlist=my_playlist)
-        net = NetworkManager(game)
-        net.run()
+        cautare = input("Ce melodie vrei să joci? (Nume / Artist): ")
+        
+        date_melodie = proceseaza_melodie_online(cautare)
+        
+        if date_melodie:
+            # Creăm un playlist "dinamic" cu o singură melodie
+            my_playlist = [date_melodie["path"]]
+            
+            # Suprascriem dicționarul original SONG_DATA ca să fie citit de clasa ta
+            SONG_DATA.clear()
+            SONG_DATA[date_melodie["path"]] = {"bpm": date_melodie["bpm"], "name": date_melodie["name"]}
+            
+            print("\n🚀 PORNIM JOCUL!")
+            game = PianoTilesPro(n, playlist=my_playlist)
+            net = NetworkManager(game)
+            net.run()
+        else:
+            print("Nu am putut pregăti melodia. Ieșire...")
+            
     except KeyboardInterrupt:
         print("\nJoc oprit.")
