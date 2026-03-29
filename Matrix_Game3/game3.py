@@ -71,7 +71,7 @@ class SoundManager:
             self._generate_sounds()
             
             self.snd_tick = pygame.mixer.Sound(os.path.join(self.base_dir, "tick.wav"))
-            self.snd_error = pygame.mixer.Sound(os.path.join(self.base_dir, "error.wav"))
+            self.snd_error = pygame.mixer.Sound(os.path.join(self.base_dir, "error2.wav"))
             self.snd_win = pygame.mixer.Sound(os.path.join(self.base_dir, "win.wav"))
             self.snd_start = pygame.mixer.Sound(os.path.join(self.base_dir, "start.wav"))
             
@@ -113,7 +113,7 @@ class SoundManager:
                         f.writeframesraw(struct.pack('<h', value))
         
         make_wav("tick.wav", 1000, 0.05)   
-        make_wav("error.wav", 150, 0.8)    
+        make_wav("error2.wav", 150, 0.8)    
         make_wav("win.wav", 600, 0.4)      
         make_wav("start.wav", 400, 0.8)    
         make_bgm("bgm.wav")
@@ -218,7 +218,6 @@ class PhysicalBlockParty:
             blob_grid = [[-1 for _ in range(MACRO_W)] for _ in range(MACRO_H)]
             blobs = []
 
-            # 1. Generam DOAR fundalul cu culori GRESITE. Folosim forme mari (4-8 macro-uri)
             min_bg, max_bg = 4, 8
             for y in range(MACRO_H):
                 for x in range(MACRO_W):
@@ -259,7 +258,6 @@ class PhysicalBlockParty:
                             adj[b1].add(b2)
                             adj[b2].add(b1)
 
-            # Coloram fundalul (GRESIT)
             wrong_colors = [c for c in COLORS_LIST if c != self.target_color]
             blob_colors = {}
             for i in range(len(blobs)):
@@ -283,34 +281,30 @@ class PhysicalBlockParty:
                     self.board[y*2+1][x*2+1] = color
                     self.blob_board[y*2+1][x*2+1] = bid
 
-            # 2. ADĂUGĂM FORMELE CORECTE PESTE FUNDAL
             elapsed_seconds = (10 * 60) - self.global_timer
             
-            # Calculam numarul de portiuni si cat de mari sunt in functie de timp
-            if elapsed_seconds >= 300:   # Dupa minutul 5 -> Brutal (1 sau 2 macro-uri)
+            if elapsed_seconds >= 300:   
                 target_count = random.randint(1, 2)
-                target_size = 1 # Exact 4 placi pe portiune (total max 8 in camera)
-            elif elapsed_seconds >= 180: # Intre minutul 3 si 5 -> Greu
+                target_size = 1 
+            elif elapsed_seconds >= 180: 
                 target_count = random.randint(2, 3)
                 target_size = random.randint(2, 3)
-            elif elapsed_seconds >= 90:  # Intre minutul 1.5 si 3 -> Mediu
+            elif elapsed_seconds >= 90:  
                 target_count = random.randint(3, 4)
                 target_size = random.randint(3, 4)
-            else:                        # La inceput (0 - 1.5) -> Usor (MAI MULTE PORTIUNI)
-                target_count = random.randint(4, 6) # Genereaza 4, 5 sau 6 portiuni sigure distincte
+            else:                        
+                target_count = random.randint(4, 6) 
                 target_size = random.randint(4, 6)
 
             safe_macros_global = set()
 
             for i in range(target_count):
-                # Alegem un punct random pentru startul portiunii corecte
                 start_y = random.randint(0, MACRO_H-1)
                 start_x = random.randint(0, MACRO_W-1)
                 
                 q = [(start_y, start_x)]
                 current_safe = set()
                 
-                # Expandam portiunea curenta fix pana la target_size
                 while q and len(current_safe) < target_size:
                     idx = random.randint(0, len(q)-1)
                     cy, cx = q.pop(idx)
@@ -323,12 +317,10 @@ class PhysicalBlockParty:
                             if 0 <= ny < MACRO_H and 0 <= nx < MACRO_W:
                                 q.append((ny, nx))
                 
-                # Pentru fiecare portiune generata, ii dam un ID unic nou (peste 1000)
                 safe_blob_id = 1000 + i
                 for (my, mx) in current_safe:
                     safe_macros_global.add((my, mx))
                     
-                    # Suprascriem fundalul cu culoarea tinta si ID-ul nou
                     self.board[my*2][mx*2] = self.target_color
                     self.blob_board[my*2][mx*2] = safe_blob_id
                     
@@ -431,7 +423,7 @@ class PhysicalBlockParty:
                 for r_idx, row in enumerate(glyph):
                     for c_idx, pixel in enumerate(row):
                         if pixel == '#':
-                            board_y = curr_y + c_idx
+                            board_y = 31 - (curr_y + c_idx)
                             board_x = 10 - r_idx 
                             
                             ratio = board_y / 31.0
@@ -532,10 +524,14 @@ class PhysicalBlockParty:
                                     if char == '#':
                                         px = start_x - row_idx * 2
                                         py = start_y + col_idx * 2
-                                        self.board[py][px] = digit_color
-                                        self.board[py][px+1] = digit_color
-                                        self.board[py+1][px] = digit_color
-                                        self.board[py+1][px+1] = digit_color
+                                        if 0 <= py < BOARD_HEIGHT and 0 <= px < BOARD_WIDTH:
+                                            self.board[py][px] = digit_color
+                                        if 0 <= py < BOARD_HEIGHT and 0 <= px+1 < BOARD_WIDTH:
+                                            self.board[py][px+1] = digit_color
+                                        if 0 <= py+1 < BOARD_HEIGHT and 0 <= px < BOARD_WIDTH:
+                                            self.board[py+1][px] = digit_color
+                                        if 0 <= py+1 < BOARD_HEIGHT and 0 <= px+1 < BOARD_WIDTH:
+                                            self.board[py+1][px+1] = digit_color
                                         
             if self.sequence_timer <= 0:
                 self.start_game_logic()
@@ -679,6 +675,115 @@ class NetworkManager:
                             self.game.button_states[(c * 64) + i] = (val == 0xCC)
             except: pass
 
+
+# --- Clasa pentru Dashboard (Monitorul 2) ---
+class Dashboard:
+    def __init__(self, game):
+        self.game = game
+        self.running = True
+        
+        if not pygame.get_init():
+            pygame.init()
+            
+        num_displays = pygame.display.get_num_displays()
+        # Forteaza al doilea monitor (index 1) daca e disponibil, altfel index 0
+        target_display = 1 if num_displays > 1 else 0
+        
+        # Deschide fereastra pe tot ecranul pe monitorul target
+        self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN, display=target_display)
+        pygame.display.set_caption("Matrix Room Dashboard")
+        
+        # Facem fonturile un pic mai mari pentru un fullscreen pe 1080p
+        pygame.font.init()
+        try:
+            self.font_large = pygame.font.SysFont("courier", 200, bold=True)
+            self.font_medium = pygame.font.SysFont("courier", 100, bold=True)
+            self.font_small = pygame.font.SysFont("courier", 80, bold=True)
+        except:
+            self.font_large = pygame.font.Font(None, 200)
+            self.font_medium = pygame.font.Font(None, 100)
+            self.font_small = pygame.font.Font(None, 80)
+            
+        self.clock = pygame.time.Clock()
+
+    def format_time(self, seconds):
+        if seconds <= 0:
+            return "00:00"
+        m = int(seconds // 60)
+        s = int(seconds % 60)
+        return f"{m:02d}:{s:02d}"
+
+    def run(self):
+        # Aflam dimensiunile ecranului pentru a centra textul frumos
+        screen_width, screen_height = self.screen.get_size()
+        
+        while self.running and self.game.running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                    self.game.running = False 
+                # Adaugam ESCAPE pentru a putea inchide usor fereastra FullScreen
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        self.running = False
+                        self.game.running = False
+
+            # Fundal negru
+            self.screen.fill((10, 10, 15))
+            
+            with self.game.lock:
+                score = self.game.score
+                round_num = self.game.round
+                time_left = self.game.global_timer
+                state = self.game.state
+
+            # Randam state/runda (Sus centrat)
+            if state == 'WAITING_TO_START':
+                status_text = "ASTEAPTA START"
+                status_color = (150, 150, 150)
+            elif state == 'GAME_FINISHED':
+                status_text = "JOC TERMINAT"
+                status_color = (255, 50, 50)
+            elif state in ['SHOW_TARGET', 'PLAYING']:
+                status_text = f"RUNDA {round_num}"
+                status_color = (50, 255, 50)
+            else:
+                status_text = f"RUNDA {round_num} (Pauza)"
+                status_color = (255, 255, 0)
+                
+            surf_status = self.font_small.render(status_text, True, status_color)
+            status_rect = surf_status.get_rect(center=(screen_width // 2, screen_height // 6))
+            self.screen.blit(surf_status, status_rect)
+
+            # Randam Timpul (Mijloc centrat)
+            time_str = self.format_time(time_left)
+            time_color = (255, 50, 50) if time_left > 0 and time_left < 60 else (255, 255, 255)
+            
+            surf_time_label = self.font_medium.render("TIMP RAMAS:", True, (200, 200, 200))
+            surf_time = self.font_large.render(time_str, True, time_color)
+            
+            time_label_rect = surf_time_label.get_rect(center=(screen_width // 2, screen_height // 2 - 100))
+            time_rect = surf_time.get_rect(center=(screen_width // 2, screen_height // 2 + 50))
+            
+            self.screen.blit(surf_time_label, time_label_rect)
+            self.screen.blit(surf_time, time_rect)
+
+            # Randam Scorul (Jos centrat)
+            surf_score_label = self.font_medium.render("SCOR:", True, (200, 200, 200))
+            surf_score = self.font_large.render(f"{score}", True, (50, 200, 255))
+            
+            score_label_rect = surf_score_label.get_rect(center=(screen_width // 2, screen_height * 5 // 6 - 50))
+            score_rect = surf_score.get_rect(center=(screen_width // 2, screen_height * 5 // 6 + 50))
+            
+            self.screen.blit(surf_score_label, score_label_rect)
+            self.screen.blit(surf_score, score_rect)
+
+            pygame.display.flip()
+            self.clock.tick(30) 
+
+        pygame.quit()
+
+
 if __name__ == "__main__":
     game = PhysicalBlockParty()
     net = NetworkManager(game)
@@ -689,8 +794,9 @@ if __name__ == "__main__":
     print("="*40)
     print("MATRIX ROOM: BLOCK PARTY MARATHON")
     print("="*40)
-    print("Scrie 'start' si apasa Enter pentru a incepe!")
-    print("Scrie 'quit' pentru a iesi.")
+    print("Jocul incepe ACUM!")
+    print("Fereastra cu ecranul de Scor se afla pe al doilea monitor (sau in fundal).")
+    print("Poti apasa ESCAPE cand ai selectata fereastra cu scorul, sau scrie 'quit' aici pentru a inchide.")
     
     def logic_loop():
         while game.running:
@@ -699,15 +805,24 @@ if __name__ == "__main__":
             
     threading.Thread(target=logic_loop, daemon=True).start()
     
-    try:
-        while game.running:
-            cmd = input("> ").strip().lower()
-            if cmd == 'start':
-                game.initiate_start_sequence()
-            elif cmd == 'quit' or cmd == 'exit':
-                game.running = False
-                break
-    except KeyboardInterrupt:
-        game.running = False
+    # --- JOCUL INCEPE AUTOMAT AICI ---
+    game.initiate_start_sequence()
+    
+    def input_loop():
+        try:
+            while game.running:
+                cmd = input("> ").strip().lower()
+                if cmd == 'quit' or cmd == 'exit':
+                    game.running = False
+                    break
+        except KeyboardInterrupt:
+            game.running = False
+            
+    threading.Thread(target=input_loop, daemon=True).start()
+    
+    # Rulam dashboard-ul in thread-ul principal (blocheaza aici pana la inchidere)
+    dashboard = Dashboard(game)
+    dashboard.run()
 
+    game.running = False
     net.running = False
