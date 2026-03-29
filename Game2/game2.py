@@ -699,7 +699,13 @@ if __name__ == "__main__":
 
                         # Launch the Audience Scoreboard screen (if it's not already open)
                         if ui.scoreboard_process is None or ui.scoreboard_process.poll() is not None:
-                            ui.scoreboard_process = subprocess.Popen([sys.executable, "scoreboard.py"])
+                            # 1. Aflăm automat folderul în care se află acest script (game2.py)
+                            director_curent = os.path.dirname(os.path.abspath(__file__))
+                            # 2. Construim calea exactă către scoreboard.py în același folder
+                            cale_scoreboard = os.path.join(director_curent, "scoreboard.py")
+                            
+                            # 3. Deschidem fișierul folosind calea completă
+                            ui.scoreboard_process = subprocess.Popen([sys.executable, cale_scoreboard])
 
                         ui.update_status(f"Downloading: {search_term}...")
                         ui.render_all(0.01) # Force screen to update immediately
