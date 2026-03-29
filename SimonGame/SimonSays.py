@@ -12,327 +12,10 @@ try:
     import pygame
 except ImportError:
     pygame = None
-
-# =========================================================
-#                      CONFIGURATION
-# =========================================================
-def _load_config():
-    return {
-        "device_ip": "255.255.255.255",
-        "send_port": 4626,
-        "recv_port": 7800,
-        "bind_ip": "0.0.0.0",
-    }
-
-CONFIG = _load_config()
-SOUND_ENABLED = True
-SOUND_VOLUME = 0.45
-SOUND_SAMPLE_RATE = 44100
-
-UDP_SEND_IP = CONFIG.get("device_ip", "255.255.255.255")
-UDP_SEND_PORT = CONFIG.get("send_port", 4626)
-UDP_LISTEN_PORT = CONFIG.get("recv_port", 7800)
-
-# =========================================================
-#                      MATRIX CONSTANTS
-# =========================================================
-NUM_CHANNELS = 8
-LEDS_PER_CHANNEL = 64
-FRAME_DATA_LENGTH = NUM_CHANNELS * LEDS_PER_CHANNEL * 3
-
-BOARD_WIDTH = 16
-BOARD_HEIGHT = 32
-
-GAME_DURATION_MINUTES = 6      # N minute tot jocul
-ROUND_DURATION_SECONDS = 6     # M secunde pentru fiecare rundă
-BASE_SCORE = 100
-
-BLACK   = (0, 0, 0)
-WHITE   = (220, 220, 220)
-
-RED     = (255, 60, 60)
-GREEN   = (60, 255, 60)
-BLUE    = (60, 60, 255)
-YELLOW  = (255, 255, 60)
-MAGENTA = (255, 60, 255)
-CYAN    = (60, 255, 255)
-ORANGE  = (255, 140, 40)
-PURPLE  = (170, 70, 255)
-PINK    = (255, 100, 180)
-BROWN   = (121, 85, 72)
-AQUA    = (80, 220, 255)
-GOLD    = (255, 200, 40)
-
-BORDER_COLOR = (120, 255, 0)
-
-WAVE_RED_1   = (70, 8, 16)
-WAVE_RED_2   = (105, 12, 30)
-WAVE_PINK_1  = (70, 18, 42)
-WAVE_PINK_2  = (110, 28, 58)
-
-FONT_3X5 = {
-    "L": ["100","100","100","100","111"],
-    "e": ["000","111","110","100","111"],
-    "d": ["001","111","101","101","111"],
-    "I": ["111","010","010","010","111"],
-    "T": ["111","010","010","010","010"],
-    "a": ["000","111","001","111","111"],
-    "l": ["010","010","010","010","011"],
-    "space": ["000","000","000","000","000"]
-}
-
-FONT_5X7 = {
-    "A": ["01110","10001","10001","11111","10001","10001","10001"],
-    "D": ["11110","10001","10001","10001","10001","10001","11110"],
-    "E": ["11111","10000","10000","11110","10000","10000","11111"],
-    "I": ["11111","00100","00100","00100","00100","00100","11111"],
-    "L": ["10000","10000","10000","10000","10000","10000","11111"],
-    "T": ["11111","00100","00100","00100","00100","00100","00100"],
-    "a": ["00000","00000","01110","00001","01111","10001","01111"],
-    "d": ["00001","00001","01111","10001","10001","10001","01111"],
-    "e": ["00000","00000","01110","10001","11111","10000","01110"],
-    "l": ["00100","00100","00100","00100","00100","00100","00011"],
-    "space": ["000","000","000","000","000","000","000"],
-    "1": ["00100","01100","00100","00100","00100","00100","01110"],
-    "2": ["01110","10001","00001","00010","00100","01000","11111"],
-    "3": ["11110","00001","00001","01110","00001","00001","11110"]
-}
-# =========================================================
-#                            Sound manager
-# =========================================================
-
-class SoundManager:
-    def __init__(self, enabled=True, volume=0.5):
-        self.enabled = enabled and (pygame is not None)
-        self.volume = volume
-        self.sounds = {}
-        self.temp_files = []
-
-        if not self.enabled:
-            print("[AUDIO] pygame nu este instalat.")
-            return
-
-        try:
-            pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
-            self._build_sounds()
-            print("[AUDIO] Sunet OK")
-        except Exception as e:
-            print(f"[AUDIO] ERROR: {e}")
-            self.enabled = False
-
-    def cleanup(self):
-        for f in self.temp_files:
-            try:
-                os.remove(f)
-            except:
-                pass
-        if self.enabled:
-            pygame.mixer.quit()
-
-    def _make_wave(self, freqs, duration=0.2, volume=0.5):
-        fd, path = tempfile.mkstemp(suffix=".wav")
-        os.close(fd)
-        self.temp_files.append(path)
-
-        sample_rate = 44100
-        n = int(sample_rate * duration)
-
-        with wave.open(path, "w") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(sample_rate)
-
-            frames = bytearray()
-            for i in range(n):
-                t = i / sample_rate
-                env = (1 - i / n)  # fade out
-
-                sample = 0
-                for f in freqs:
-                    sample += math.sin(2 * math.pi * f * t)
-
-                sample /= len(freqs)
-                sample = int(32767 * volume * env * sample)
-
-                frames += struct.pack("<h", sample)
-
-            wf.writeframes(frames)
-
-        return pygame.mixer.Sound(path)
-
-    def _build_sounds(self):
-        # 🎵 note muzicale (mai nice decât random freqs)
-        notes = [
-            261.63, 293.66, 329.63,
-            349.23, 392.00, 440.00,
-            493.88, 523.25, 587.33,
-            659.25, 698.46, 783.99
-        ]
-
-        # TILE sounds (clar, distinct)
-        for i, f in enumerate(notes):
-            snd = self._make_wave([f], 0.18, self.volume)
-            snd.set_volume(self.volume)
-            self.sounds[f"tile_{i}"] = snd
-
-        # SUCCESS (uplifting)
-        self.sounds["success"] = self._make_wave([523.25, 659.25, 783.99], 0.35)
-
-        # FAIL (low + rough)
-        self.sounds["wrong"] = self._make_wave([140, 110], 0.45)
-
-        # GAME OVER (deep)
-        self.sounds["game_over"] = self._make_wave([100, 80], 0.7)
-
-        # COUNTDOWN (increasing pitch)
-        self.sounds["count_3"] = self._make_wave([500], 0.2)
-        self.sounds["count_2"] = self._make_wave([700], 0.2)
-        self.sounds["count_1"] = self._make_wave([900], 0.25)
-
-        # INTRO (arcade vibe)
-        self.sounds["intro"] = self._make_wave([440, 660], 0.4)
-
-    def play(self, name):
-        if not self.enabled:
-            return
-        try:
-            if name in self.sounds:
-                self.sounds[name].play(maxtime=500)
-        except:
-            pass
-
-# =========================================================
-#                            HUD
-# =========================================================
-
-class HelperDisplay:
-    def __init__(self, game):
-        self.game = game
-        self.root = tk.Tk()
-        self.root.title("Simon Game Helper Display")
-        self.root.configure(bg="black")
-
-        # fullscreen; dacă vrei doar fereastră normală, comentezi linia asta
-        self.root.state("normal")
-        self.root.geometry("1920x1080+1920+0")
-        self.root.configure(bg="black")
-
-        # ESC închide doar fereastra helper
-        self.root.bind("<Escape>", self.close)
-
-        self.score_var = tk.StringVar(value="0")
-        self.time_var = tk.StringVar(value="03:00")
-        self.level_var = tk.StringVar(value="1")
-        self.state_var = tk.StringVar(value="WAITING")
-
-        container = tk.Frame(self.root, bg="black")
-        container.pack(expand=True, fill="both")
-
-        title = tk.Label(
-            container,
-            text="SIMON GAME",
-            font=("Arial", 34, "bold"),
-            fg="white",
-            bg="black"
-        )
-        title.pack(pady=(40, 20))
-
-        score_title = tk.Label(
-            container,
-            text="SCOR",
-            font=("Arial", 28, "bold"),
-            fg="#00ff88",
-            bg="black"
-        )
-        score_title.pack(pady=(20, 5))
-
-        score_value = tk.Label(
-            container,
-            textvariable=self.score_var,
-            font=("Arial", 72, "bold"),
-            fg="#00ff88",
-            bg="black"
-        )
-        score_value.pack(pady=(0, 30))
-
-        time_title = tk.Label(
-            container,
-            text="TIMP RAMAS",
-            font=("Arial", 28, "bold"),
-            fg="#ffd400",
-            bg="black"
-        )
-        time_title.pack(pady=(10, 5))
-
-        time_value = tk.Label(
-            container,
-            textvariable=self.time_var,
-            font=("Arial", 64, "bold"),
-            fg="#ffd400",
-            bg="black"
-        )
-        time_value.pack(pady=(0, 30))
-
-        level_title = tk.Label(
-            container,
-            text="NIVEL",
-            font=("Arial", 24, "bold"),
-            fg="#66ccff",
-            bg="black"
-        )
-        level_title.pack(pady=(10, 5))
-
-        level_value = tk.Label(
-            container,
-            textvariable=self.level_var,
-            font=("Arial", 42, "bold"),
-            fg="#66ccff",
-            bg="black"
-        )
-        level_value.pack(pady=(0, 20))
-
-        state_value = tk.Label(
-            container,
-            textvariable=self.state_var,
-            font=("Arial", 22, "bold"),
-            fg="#ff6666",
-            bg="black"
-        )
-        state_value.pack(pady=(20, 40))
-
-        self.running = True
-        self.update_loop()
-
-    def format_mmss(self, seconds):
-        seconds = max(0, int(seconds))
-        m = seconds // 60
-        s = seconds % 60
-        return f"{m:02}:{s:02}"
-
-    def update_loop(self):
-        if not self.running:
-            return
-
-        try:
-            self.score_var.set(str(self.game.score))
-            self.time_var.set(self.format_mmss(self.game.get_game_time_left()))
-            self.level_var.set(str(max(1, self.game.level)))
-            self.state_var.set(self.game.state.upper())
-        except Exception:
-            pass
-
-        self.root.after(100, self.update_loop)
-
-    def close(self, event=None):
-        self.running = False
-        try:
-            self.root.destroy()
-        except:
-            pass
-
-    def run(self):
-        self.root.mainloop()
-
+from constants import *
+from SoundManager import SoundManager
+from Hud import HelperDisplay
+from Network import NetworkManager
 
 # =========================================================
 #                         SIMON GAME
@@ -530,30 +213,18 @@ class SimonGame:
                 off_color=BLACK
             )
 
+    #Center clock logic
     def draw_clock_pie(self, visible_segments=None, color=YELLOW, off_color=BLACK):
-        """
-        Ceas circular 10x10.
-        visible_segments:
-            8 = cerc complet
-            7 = lipsește 1/8
-            6 = lipsesc 2/8
-            ...
-            0 = gol complet
 
-        Feliile dispar în sens orar, pornind de sus (ora 12),
-        exact ca un pie chart / tort tăiat.
-        """
         if visible_segments is None:
             visible_segments = 8
 
         visible_segments = max(0, min(8, visible_segments))
         missing_segments = 8 - visible_segments
 
-        # top-left pentru un cerc 10x10 centrat pe board 16x32
         origin_x = 3
         origin_y = 11
 
-        # centru local al cercului 10x10
         cx = 4.5
         cy = 4.5
         radius = 4.6
@@ -564,18 +235,11 @@ class SimonGame:
                 dy = ly - cy
                 dist = math.sqrt(dx * dx + dy * dy)
 
-                # desenăm doar pixelii din cerc
                 if dist <= radius:
-                    # unghi:
-                    # 0° = sus
-                    # crește în sens orar
                     angle = (math.degrees(math.atan2(dx, -dy)) + 360.0) % 360.0
 
-                    # 8 sectoare a câte 45°
-                    sector = int(angle // 45.0)  # 0..7
+                    sector = int(angle // 45.0)
 
-                    # Scoatem feliile în ordine:
-                    # 0 = sus -> sus-dreapta -> dreapta -> ...
                     px = origin_x + lx
                     py = origin_y + ly
 
@@ -606,6 +270,7 @@ class SimonGame:
 
         return max(0, min(8, segments))
 
+
     def get_char_bitmap(self, ch):
         if ch in FONT_5X7:
             return FONT_5X7[ch]
@@ -625,7 +290,6 @@ class SimonGame:
         w = len(bitmap_rows[0])
 
         if clockwise:
-            # noul bitmap va avea w rânduri, fiecare de lungime h
             return [
                 [bitmap_rows[h - 1 - y][x] for y in range(h)]
                 for x in range(w)
@@ -687,9 +351,7 @@ class SimonGame:
         self.sound.play("intro")
         text = "  LedITall  "
 
-        # -----------------------------
-        # 1) SCROLL - fontul vechi 5x7
-        # -----------------------------
+        #Scroll LedITall
         bitmap_scroll = self.build_text_bitmap(text, spacing=1)
         bitmap_scroll = self.rotate_bitmap_90(bitmap_scroll, clockwise=True)
 
@@ -706,9 +368,7 @@ class SimonGame:
             self.draw_text_bitmap(bitmap_scroll, text_x, offset_y, color=WHITE)
             time.sleep(0.05)
 
-        # -------------------------------------
-        # 2) POP FINAL - font mic 3x5
-        # -------------------------------------
+        # Final LedITall
         final_text = "LedITall"
         bitmap_final = self.build_text_bitmap_with_font(final_text, FONT_3X5, spacing=1)
         bitmap_final = self.rotate_bitmap_90(bitmap_final, clockwise=True)
@@ -805,17 +465,6 @@ class SimonGame:
     # -----------------------------------------------------
     #                     GAME FLOW
     # -----------------------------------------------------
-    def calculate_score_gain(self):
-        total_time = self.game_duration_sec
-        time_left = self.get_game_time_left()
-
-        elapsed = total_time - time_left
-        elapsed = max(1.0, elapsed)
-
-        sequence_length = len(self.sequence)
-
-        gain = self.base_score * sequence_length * (1.0 / math.sqrt(elapsed))
-        return int(round(gain))
 
     def start_new_game(self):
         self.sequence = []
@@ -900,6 +549,18 @@ class SimonGame:
         self.run_countdown()
         self.start_new_game()
 
+    def calculate_score_gain(self):
+        total_time = self.game_duration_sec
+        time_left = self.get_game_time_left()
+
+        elapsed = total_time - time_left
+        elapsed = max(1.0, elapsed)
+
+        sequence_length = len(self.sequence)
+
+        gain = self.base_score * sequence_length * (1.0 / math.sqrt(elapsed))
+        return int(round(gain))
+
     def repeat_sequence_async(self, play_sound=True):
         self.state = "repeat"
         t = threading.Thread(target=self.run_repeat_sequence, args=(play_sound,), daemon=True)
@@ -920,16 +581,6 @@ class SimonGame:
     # -----------------------------------------------------
     #                    INPUT HANDLING
     # -----------------------------------------------------
-
-    def get_round_duration(self):
-        """
-        Runda 1-2: 8 sec
-        De la runda 3: +3 sec per nivel
-        """
-        if self.level < 3:
-            return self.round_duration_sec
-        else:
-            return min(25, self.round_duration_sec + (self.level - 3) * 2)
     
     def tick(self):
         # eliberare tile-uri
@@ -958,6 +609,13 @@ class SimonGame:
                 self.last_clock_visible_segments = segs
                 self.redraw_game_scene(dim=False)
 
+    def get_round_duration(self):
+        if self.level < 3:
+            return self.round_duration_sec
+        else:
+            return min(25, self.round_duration_sec + (self.level - 3) * 2)
+
+
     def handle_physical_press(self, led_idx):
         if self.state != "input":
             return
@@ -975,7 +633,6 @@ class SimonGame:
 
         self.handle_game_input(tile_id)
 
-        # apoi pornește highlight-ul vizual
         t = threading.Thread(
             target=self.flash_pressed_tile_feedback,
             args=(tile_id,),
@@ -1073,7 +730,8 @@ class SimonGame:
                 if led_idx is not None and self.button_states[led_idx]:
                     return True
         return False
-        # -----------------------------------------------------
+
+    # -----------------------------------------------------
     #                        RENDER
     # -----------------------------------------------------
     def render(self):
@@ -1107,190 +765,11 @@ class SimonGame:
             buffer[offset + NUM_CHANNELS] = color[0]
             buffer[offset + NUM_CHANNELS * 2] = color[2]
 
-# =========================================================
-#                     NETWORK MANAGER
-# =========================================================
-class NetworkManager:
-    def __init__(self, game):
-        self.game = game
-        self.sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock_send.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-
-        self.sock_recv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-        self.running = True
-        self.sequence_number = 0
-
-        bind_ip = CONFIG.get("bind_ip", "0.0.0.0")
-        if bind_ip != "0.0.0.0":
-            try:
-                self.sock_send.bind((bind_ip, 0))
-            except:
-                pass
-
-        try:
-            self.sock_recv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.sock_recv.bind(("0.0.0.0", UDP_LISTEN_PORT))
-        except Exception as e:
-            print(f"Eroare bind: {e}")
-            self.running = False
-
-    def send_loop(self):
-        while self.running:
-            frame = self.game.render()
-            self.send_packet(frame)
-            time.sleep(0.05)
-
-    def send_packet(self, frame_data):
-        self.sequence_number = (self.sequence_number + 1) & 0xFFFF
-        if self.sequence_number == 0:
-            self.sequence_number = 1
-
-        target_ip = UDP_SEND_IP
-        port = UDP_SEND_PORT
-
-        # 1. Start Packet
-        rand1, rand2 = random.randint(0, 127), random.randint(0, 127)
-        start_packet = bytearray([
-            0x75, rand1, rand2, 0x00, 0x08,
-            0x02, 0x00, 0x00, 0x33, 0x44,
-            (self.sequence_number >> 8) & 0xFF,
-            self.sequence_number & 0xFF,
-            0x00, 0x00, 0x00, 0x0E, 0x00
-        ])
-        try:
-            self.sock_send.sendto(start_packet, (target_ip, port))
-            self.sock_send.sendto(start_packet, ("127.0.0.1", port))
-        except:
-            pass
-
-        # 2. FFF0 Packet
-        rand1, rand2 = random.randint(0, 127), random.randint(0, 127)
-        fff0_payload = bytearray()
-        for _ in range(NUM_CHANNELS):
-            fff0_payload += bytes([
-                (LEDS_PER_CHANNEL >> 8) & 0xFF,
-                LEDS_PER_CHANNEL & 0xFF
-            ])
-
-        fff0_internal = bytearray([
-            0x02, 0x00, 0x00, 0x88, 0x77, 0xFF, 0xF0,
-            (len(fff0_payload) >> 8) & 0xFF,
-            len(fff0_payload) & 0xFF
-        ]) + fff0_payload
-
-        fff0_len = len(fff0_internal) - 1
-        fff0_packet = bytearray([
-            0x75, rand1, rand2,
-            (fff0_len >> 8) & 0xFF,
-            fff0_len & 0xFF
-        ]) + fff0_internal + bytearray([0x1E, 0x00])
-
-        try:
-            self.sock_send.sendto(fff0_packet, (target_ip, port))
-            self.sock_send.sendto(fff0_packet, ("127.0.0.1", port))
-        except:
-            pass
-
-        # 3. Data Packets
-        chunk_size = 984
-        data_packet_index = 1
-
-        for i in range(0, len(frame_data), chunk_size):
-            rand1, rand2 = random.randint(0, 127), random.randint(0, 127)
-            chunk = frame_data[i:i + chunk_size]
-
-            internal_data = bytearray([
-                0x02, 0x00, 0x00,
-                (0x8877 >> 8) & 0xFF,
-                0x8877 & 0xFF,
-                (data_packet_index >> 8) & 0xFF,
-                data_packet_index & 0xFF,
-                (len(chunk) >> 8) & 0xFF,
-                len(chunk) & 0xFF
-            ]) + chunk
-
-            payload_len = len(internal_data) - 1
-            packet = bytearray([
-                0x75, rand1, rand2,
-                (payload_len >> 8) & 0xFF,
-                payload_len & 0xFF
-            ]) + internal_data
-
-            packet.append(0x1E if len(chunk) == 984 else 0x36)
-            packet.append(0x00)
-
-            try:
-                self.sock_send.sendto(packet, (target_ip, port))
-                self.sock_send.sendto(packet, ("127.0.0.1", port))
-            except:
-                pass
-
-            data_packet_index += 1
-            time.sleep(0.005)
-
-        # 4. End Packet
-        rand1, rand2 = random.randint(0, 127), random.randint(0, 127)
-        end_packet = bytearray([
-            0x75, rand1, rand2, 0x00, 0x08,
-            0x02, 0x00, 0x00, 0x55, 0x66,
-            (self.sequence_number >> 8) & 0xFF,
-            self.sequence_number & 0xFF,
-            0x00, 0x00, 0x00, 0x0E, 0x00
-        ])
-
-        try:
-            self.sock_send.sendto(end_packet, (target_ip, port))
-            self.sock_send.sendto(end_packet, ("127.0.0.1", port))
-        except:
-            pass
-
-    def recv_loop(self):
-        while self.running:
-            try:
-                data, _ = self.sock_recv.recvfrom(2048)
-
-                if len(data) >= 1373 and data[0] == 0x88:
-                    newly_pressed = []
-
-                    for c in range(8):
-                        offset = 2 + (c * 171) + 1
-                        ch_data = data[offset: offset + 64]
-
-                        for i, val in enumerate(ch_data):
-                            global_idx = (c * 64) + i
-                            new_state = (val == 0xCC)
-                            old_state = self.game.button_states[global_idx]
-
-                            self.game.button_states[global_idx] = new_state
-
-                            if new_state and not old_state:
-                                newly_pressed.append(global_idx)
-
-                    for led_idx in newly_pressed:
-                        self.game.handle_physical_press(led_idx)
-
-            except Exception:
-                time.sleep(0.001)
-
-    def start_bg(self):
-        t1 = threading.Thread(target=self.send_loop, daemon=True)
-        t2 = threading.Thread(target=self.recv_loop, daemon=True)
-        t1.start()
-        t2.start()
-
-# =========================================================
-#                        GAME LOOP
-# =========================================================
-def game_thread_func(game):
-    while game.running:
-        game.tick()
-        time.sleep(0.002)
-
 
 # =========================================================
 #                           MAIN
 # =========================================================
+
 if __name__ == "__main__":
     game = SimonGame()
     net = NetworkManager(game)
@@ -1304,9 +783,6 @@ if __name__ == "__main__":
     gt = threading.Thread(target=game_thread_func, args=(game,), daemon=True)
     gt.start()
 
-    print("Simon Game pornit.")
-    print("Intro activ: LedITall")
-    print("Urmareste secventa, apoi apasa patratele in ordinea afisata.")
     print("Inchide fereastra helper sau apasa Ctrl+C pentru iesire.")
 
     try:
@@ -1346,9 +822,6 @@ if __name__ == "__main__":
     gt = threading.Thread(target=game_thread_func, args=(game,), daemon=True)
     gt.start()
 
-    print("Simon Game pornit.")
-    print("Intro activ: LedITall")
-    print("Urmareste secventa, apoi apasa patratele in ordinea afisata.")
     print("Scrie 'quit' sau 'exit' ca sa iesi.")
 
     try:
