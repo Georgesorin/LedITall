@@ -33,9 +33,9 @@ import librosa
 SONG_DATA = {}
 
 # --- CONFIGURARE EXISTENTĂ ---
-UDP_SEND_IP         = "127.0.0.1"
-UDP_SEND_PORT_MAIN  = 4226
-UDP_LISTEN_PORT     = 4444
+UDP_SEND_IP         = "255.255.255.255"
+UDP_SEND_PORT_MAIN  = 4626
+UDP_LISTEN_PORT     = 7800
 UDP_SCORE_PORT = 4445
 
 NUM_CHANNELS        = 8
@@ -57,6 +57,8 @@ CLR_CYAN = (0, 255, 255)
 CLR_NEON_PINK = (255, 20, 147)
 CLR_TEXT = (230, 230, 230)
 CLR_INPUT_BG = (10, 10, 15)
+
+
 class InterfaceManager:
     def __init__(self):
         pygame.init()
@@ -957,6 +959,7 @@ class NetworkManager:
     def __init__(self, game):
         self.game, self.seq = game, 0
         self.s_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.s_send.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.s_recv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.s_recv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try: self.s_recv.bind(("0.0.0.0", UDP_LISTEN_PORT))
@@ -1035,6 +1038,12 @@ if __name__ == "__main__":
                     try:
                         n_players = int(ui.input_players.get_text())
                         search_term = ui.input_search.get_text()
+
+                        import subprocess
+                        import sys
+                        # Aceasta porneste automat al doilea script intr-o fereastra noua
+                        subprocess.Popen([sys.executable, "scoreboard.py"])
+
                         ui.update_status(f"Searching: {search_term}...")
                         ui.render_all(0.01)
                         
