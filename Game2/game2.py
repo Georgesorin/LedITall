@@ -57,6 +57,8 @@ CLR_CYAN = (0, 255, 255)
 CLR_NEON_PINK = (255, 20, 147)
 CLR_TEXT = (230, 230, 230)
 CLR_INPUT_BG = (10, 10, 15)
+
+
 class InterfaceManager:
     def __init__(self):
         pygame.init()
@@ -957,6 +959,7 @@ class NetworkManager:
     def __init__(self, game):
         self.game, self.seq = game, 0
         self.s_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.s_send.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.s_recv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.s_recv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try: self.s_recv.bind(("0.0.0.0", UDP_LISTEN_PORT))
