@@ -75,6 +75,14 @@ YELLOW = (255, 200,   0)
 WHITE  = (255, 255, 255)
 OFF    = (  0,   0,   0)
 DIM    = ( 25,  25,  25)
+ORANGE = (255, 120, 0)
+
+LIFE_COLORS = {
+    3: GREEN,
+    2: YELLOW,
+    1: ORANGE,
+    0: RED,
+}
 
 S_SETUP      = "setup"
 S_PLACEMENT  = "placement"
@@ -229,6 +237,10 @@ class BattleShipsGame:
             self._handle_battle_press(player, ch, led)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+    def _life_eye_color(self, player):
+        ships_left = self._alive_ship_count(player)
+        return LIFE_COLORS.get(ships_left, RED)
+
     def _player_for_wall(self, ch):
         mapping = PLAYER_WALLS.get(self.num_players, {})
         for p, walls in mapping.items():
@@ -291,7 +303,7 @@ class BattleShipsGame:
         """
         Ships are hidden during battle.
         Only show:
-        - eye LED for alive/dead status
+        - eye LED as life indicator
         - player's currently selected attack tile in target colour, or white for 'nothing'
         """
         for p in range(self.num_players):
@@ -303,10 +315,8 @@ class BattleShipsGame:
             for led in BUTTONS:
                 self._svc.set_led(wall, led, *OFF)
 
-            if self.alive[p]:
-                self._svc.set_led(wall, EYE_LED, *PLAYER_COLORS_RGB[p])
-            else:
-                self._svc.set_led(wall, EYE_LED, *RED)
+            # Eye = remaining lives
+            self._svc.set_led(wall, EYE_LED, *self._life_eye_color(p))
 
         # Overlay current selections
         for p in range(self.num_players):
@@ -327,6 +337,45 @@ class BattleShipsGame:
                 self._svc.set_led(wall, tile, *WHITE)
             else:
                 self._svc.set_led(wall, tile, *PLAYER_COLORS_RGB[target])
+            """
+            Ships are hidden during battle.
+            Only show:
+            - eye LED for alive/dead status
+            - player's currently selected attack tile in target colour, or white for 'nothing'
+            """
+            for p in range(self.num_players):
+                wall = self._wall_for_player(p)
+                if wall is None:
+                    continue
+
+                # Hide all ship positions to prevent cheating
+                for led in BUTTONS:
+                    self._svc.set_led(wall, led, *OFF)
+
+                if self.alive[p]:
+                    self._svc.set_led(wall, EYE_LED, *PLAYER_COLORS_RGB[p])
+                else:
+                    self._svc.set_led(wall, EYE_LED, *RED)
+
+            # Overlay current selections
+            for p in range(self.num_players):
+                if not self.alive[p]:
+                    continue
+
+                wall = self._wall_for_player(p)
+                tile = self.selected_tile[p]
+                if tile is None:
+                    continue
+
+                cycle = self.target_cycle[p]
+                if not cycle:
+                    continue
+
+                target = cycle[self.target_index[p]]
+                if target is None:
+                    self._svc.set_led(wall, tile, *WHITE)
+                else:
+                    self._svc.set_led(wall, tile, *PLAYER_COLORS_RGB[target])
 
     def _draw_gameover_leds(self):
         alive = self._alive_players()
@@ -337,13 +386,17 @@ class BattleShipsGame:
             if wall is None:
                 continue
 
-            if p == winner:
-                color = PLAYER_COLORS_RGB[p]
-            else:
-                color = RED if not self.alive[p] else DIM
+            # all tiles off by default
+            for led in BUTTONS:
+                self._svc.set_led(wall, led, *OFF)
 
-            for led in range(LEDS_PER_CHANNEL):
-                self._svc.set_led(wall, led, *color)
+            # eye shows life state
+            self._svc.set_led(wall, EYE_LED, *self._life_eye_color(p))
+
+            # optional winner highlight on wall tiles
+            if p == winner:
+                for led in BUTTONS:
+                    self._svc.set_led(wall, led, *PLAYER_COLORS_RGB[p])
 
     # ── Placement ─────────────────────────────────────────────────────────────
     def _handle_placement_press(self, player, ch, led):
@@ -622,10 +675,10 @@ class BattleShipsGame:
                 if round_left < 3.0:
                     phase = int(now * 8) % 2
                     for p in range(self.num_players):
-                        if not self.alive[p]:
-                            continue
                         wall = self._wall_for_player(p)
-                        col = PLAYER_COLORS_RGB[p] if phase == 0 else OFF
+                        if wall is None:
+                            continue
+                        col = self._life_eye_color(p) if phase == 0 else OFF
                         self._svc.set_led(wall, EYE_LED, *col)
 
                     # restore selected overlays after blink write
