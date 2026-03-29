@@ -33,9 +33,9 @@ import librosa
 SONG_DATA = {}
 
 # --- CONFIGURARE EXISTENTĂ ---
-UDP_SEND_IP         = "127.0.0.1"
-UDP_SEND_PORT_MAIN  = 4226
-UDP_LISTEN_PORT     = 4444
+UDP_SEND_IP         = "255.255.255.255"
+UDP_SEND_PORT_MAIN  = 4626
+UDP_LISTEN_PORT     = 7800
 UDP_SCORE_PORT = 4445
 
 NUM_CHANNELS        = 8
@@ -1035,6 +1035,12 @@ if __name__ == "__main__":
                     try:
                         n_players = int(ui.input_players.get_text())
                         search_term = ui.input_search.get_text()
+
+                        import subprocess
+                        import sys
+                        # Aceasta porneste automat al doilea script intr-o fereastra noua
+                        subprocess.Popen([sys.executable, "scoreboard.py"])
+
                         ui.update_status(f"Searching: {search_term}...")
                         ui.render_all(0.01)
                         
