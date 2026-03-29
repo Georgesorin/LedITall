@@ -784,9 +784,10 @@ class BattleShipsApp(tk.Tk):
         self._service = LightService()
         self._service.on_status = lambda m: self.after(0, lambda msg=m: self._set_status(msg))
 
-        ip = self._cfg.get("device_ip", "127.0.0.1")
-        if ip:
-            self._service.set_device(ip, self._cfg.get("udp_port", 4626))
+        SEND_IP = "169.254.182.11"
+        RECV_IP = "255.255.255.255"
+
+        self._service.set_device(SEND_IP, self._cfg.get("udp_port", 4626))
         self._service.set_recv_port(self._cfg.get("receiver_port", 7800))
         self._service.set_poll_rate(self._cfg.get("polling_rate_ms", 100))
         self._service.start_receiver()
@@ -799,7 +800,7 @@ class BattleShipsApp(tk.Tk):
         # ── Setup vars ────────────────────────────────────────────────────────
         self._v_players = tk.IntVar(value=2)
         self._v_player_names = [tk.StringVar(value=PLAYER_NAMES_DEFAULT[i]) for i in range(MAX_PLAYERS)]
-        self._v_device_ip = tk.StringVar(value=ip or "127.0.0.1")
+        self._v_device_ip = tk.StringVar(value="169.254.182.11")
 
         # ── Screens ───────────────────────────────────────────────────────────
         self._frame_setup = tk.Frame(self, bg=BG_DARK)
@@ -1129,11 +1130,11 @@ class BattleShipsApp(tk.Tk):
 
     # ── Controls ──────────────────────────────────────────────────────────────
     def _apply_ip(self):
-        ip = self._v_device_ip.get().strip()
-        self._service.set_device(ip, self._cfg.get("udp_port", 4626))
-        self._cfg["device_ip"] = ip
+        send_ip = "169.254.182.11"
+        self._service.set_device(send_ip, self._cfg.get("udp_port", 4626))
+        self._cfg["device_ip"] = send_ip
         save_config(self._cfg)
-        self._set_status(f"Device → {ip}")
+        self._set_status(f"SEND → {send_ip} | RECV → 255.255.255.255")
 
     def _start_game(self):
         self._apply_ip()
