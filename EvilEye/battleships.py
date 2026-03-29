@@ -30,6 +30,8 @@ import random
 import threading
 import time
 import tkinter as tk
+import socket
+import struct
 
 # ── Import LightService from sibling Controller.py ───────────────────────────
 _DIR = os.path.dirname(os.path.abspath(__file__))
@@ -61,7 +63,7 @@ PLAYER_WALLS = {
 }
 
 PLAYER_COLORS_RGB = [
-    (255,  60,   0),   # A – orange-red
+    (194,  75,   19),   # A – orange-dark
     (  0, 100, 255),   # B – blue
     (  0, 210,  60),   # C – green
     (200,   0, 200),   # D – purple
@@ -142,6 +144,152 @@ def _seg_btn(parent, text, var, value, **kw):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Network discovery helpers
+# ─────────────────────────────────────────────────────────────────────────────
+def calc_sum(data: bytes) -> int:
+    return sum(data) & 0xFF
+
+
+def ip_to_int(ip: str) -> int:
+    return struct.unpack("!I", socket.inet_aton(ip))[0]
+
+
+def int_to_ip(value: int) -> str:
+    return socket.inet_ntoa(struct.pack("!I", value))
+
+
+def prefix_to_netmask(prefix_len: int) -> str:
+    mask = (0xFFFFFFFF << (32 - prefix_len)) & 0xFFFFFFFF
+    return int_to_ip(mask)
+
+
+def broadcast_from_ip_mask(ip: str, netmask: str) -> str:
+    ip_i = ip_to_int(ip)
+    mask_i = ip_to_int(netmask)
+    bcast_i = ip_i | (~mask_i & 0xFFFFFFFF)
+    return int_to_ip(bcast_i)
+
+
+def get_local_interfaces():
+    """
+    Return list of tuples:
+        (interface_name, local_ip, broadcast_ip)
+
+    Tries to detect IPv4 interfaces using socket.getaddrinfo / hostname.
+    Also injects link-local broadcast for 169.254.x.x if present.
+    """
+    interfaces = []
+    seen = set()
+
+    hostname = socket.gethostname()
+
+    candidates = set()
+
+    # hostname lookup
+    try:
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_DGRAM):
+            ip = info[4][0]
+            if ip and not ip.startswith("127."):
+                candidates.add(ip)
+    except Exception:
+        pass
+
+    # default route style probe
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        if ip and not ip.startswith("127."):
+            candidates.add(ip)
+    except Exception:
+        pass
+
+    # fallback localhost-less guess
+    try:
+        local_ip = socket.gethostbyname(hostname)
+        if local_ip and not local_ip.startswith("127."):
+            candidates.add(local_ip)
+    except Exception:
+        pass
+
+    for idx, ip in enumerate(sorted(candidates)):
+        iface_name = f"Interface {idx}"
+
+        # Heuristic broadcast
+        if ip.startswith("169.254."):
+            # link-local APIPA range
+            bcast = "169.254.255.255"
+        else:
+            # assume /24 if we cannot inspect mask
+            bcast = broadcast_from_ip_mask(ip, "255.255.255.0")
+
+        key = (iface_name, ip, bcast)
+        if key not in seen:
+            interfaces.append(key)
+            seen.add(key)
+
+    return interfaces
+
+
+def build_discovery_packet():
+    rand1, rand2 = random.randint(0, 127), random.randint(0, 127)
+    payload = bytearray([
+        0x0A, 0x02, *b"KX-HC04", 0x03,
+        0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x14
+    ])
+    pkt = bytearray([0x67, rand1, rand2, len(payload)]) + payload
+    pkt.append(calc_sum(pkt))
+    return pkt, rand1, rand2
+
+
+def discover_devices_on_interface(bind_ip: str, broadcast_ip: str, recv_port: int = 7800, send_port: int = 4626, timeout_s: float = 3.0):
+    """
+    Returns list of dicts:
+        [{'ip': 'x.x.x.x', 'model': 'KX-HC04'}, ...]
+    """
+    devices = []
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+    try:
+        try:
+            sock.bind((bind_ip, recv_port))
+        except Exception:
+            try:
+                sock.bind(("", recv_port))
+            except Exception:
+                pass
+
+        pkt, r1, r2 = build_discovery_packet()
+        sock.sendto(pkt, (broadcast_ip, send_port))
+
+        sock.settimeout(0.5)
+        end_time = time.time() + timeout_s
+
+        while time.time() < end_time:
+            try:
+                data, addr = sock.recvfrom(1024)
+                if len(data) >= 30 and data[0] == 0x68 and data[1] == r1 and data[2] == r2:
+                    if addr[0] not in [d["ip"] for d in devices]:
+                        model = data[6:13].decode(errors="ignore").strip("\x00")
+                        devices.append({
+                            "ip": addr[0],
+                            "model": model or "UNKNOWN"
+                        })
+            except socket.timeout:
+                continue
+            except Exception:
+                pass
+    finally:
+        sock.close()
+
+    return devices
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Game Engine
 # ─────────────────────────────────────────────────────────────────────────────
 class BattleShipsGame:
@@ -179,6 +327,10 @@ class BattleShipsGame:
         self.target_cycle = [[] for _ in range(MAX_PLAYERS)]  # [opponents..., None]
         self.target_index = [0] * MAX_PLAYERS           # active index in target_cycle
         self.last_press_at = [0.0] * MAX_PLAYERS        # optional debounce aid
+        
+        self._feedback_stop = threading.Event()
+        self._feedback_thr = None
+        self._tick_rate = 1.0 / 30.0   # 30 FPS logic tick
 
     # ── Public API ────────────────────────────────────────────────────────────
     def start_game(self, num_players, player_names=None):
@@ -214,10 +366,29 @@ class BattleShipsGame:
 
     def stop_game(self):
         self._stop.set()
+        self._stop_feedback_thread()
         if self._thr and self._thr.is_alive():
             self._thr.join(timeout=2.0)
         self._svc.all_off()
         self.state = S_SETUP
+
+    def _stop_feedback_thread(self):
+        self._feedback_stop.set()
+        thr = self._feedback_thr
+        if thr and thr.is_alive():
+            thr.join(timeout=0.5)
+        self._feedback_thr = None
+        self._feedback_stop.clear()
+
+    def _start_feedback_thread(self, results, eliminated_now):
+        self._stop_feedback_thread()
+        self._feedback_stop.clear()
+        self._feedback_thr = threading.Thread(
+            target=self._flash_round_feedback,
+            args=(results, eliminated_now),
+            daemon=True
+        )
+        self._feedback_thr.start()
 
     def handle_button(self, ch, led, is_triggered, is_disconnected):
         if not is_triggered:
@@ -337,45 +508,6 @@ class BattleShipsGame:
                 self._svc.set_led(wall, tile, *WHITE)
             else:
                 self._svc.set_led(wall, tile, *PLAYER_COLORS_RGB[target])
-            """
-            Ships are hidden during battle.
-            Only show:
-            - eye LED for alive/dead status
-            - player's currently selected attack tile in target colour, or white for 'nothing'
-            """
-            for p in range(self.num_players):
-                wall = self._wall_for_player(p)
-                if wall is None:
-                    continue
-
-                # Hide all ship positions to prevent cheating
-                for led in BUTTONS:
-                    self._svc.set_led(wall, led, *OFF)
-
-                if self.alive[p]:
-                    self._svc.set_led(wall, EYE_LED, *PLAYER_COLORS_RGB[p])
-                else:
-                    self._svc.set_led(wall, EYE_LED, *RED)
-
-            # Overlay current selections
-            for p in range(self.num_players):
-                if not self.alive[p]:
-                    continue
-
-                wall = self._wall_for_player(p)
-                tile = self.selected_tile[p]
-                if tile is None:
-                    continue
-
-                cycle = self.target_cycle[p]
-                if not cycle:
-                    continue
-
-                target = cycle[self.target_index[p]]
-                if target is None:
-                    self._svc.set_led(wall, tile, *WHITE)
-                else:
-                    self._svc.set_led(wall, tile, *PLAYER_COLORS_RGB[target])
 
     def _draw_gameover_leds(self):
         alive = self._alive_players()
@@ -433,7 +565,7 @@ class BattleShipsGame:
     def _begin_round(self):
         self.round_index += 1
         self.round_duration = random.uniform(ROUND_MIN_SECONDS, ROUND_MAX_SECONDS)
-        self.round_deadline = time.time() + self.round_duration
+        self.round_deadline = time.perf_counter() + self.round_duration
 
         for p in range(self.num_players):
             self.selected_tile[p] = None
@@ -455,7 +587,7 @@ class BattleShipsGame:
         if not self.alive[player]:
             return
 
-        now = time.time()
+        now = time.perf_counter()
 
         with self._lock:
             # Optional soft debounce
@@ -557,10 +689,15 @@ class BattleShipsGame:
 
     def _flash_round_feedback(self, results, eliminated_now):
         """
-        Brief aggregated feedback after simultaneous resolution.
+        Runs in a separate thread so the round timer is never delayed.
         """
-        # Flash all successful hit tiles
+        stop_evt = self._feedback_stop
+
+        # Flash attack results
         for _ in range(2):
+            if self._stop.is_set() or stop_evt.is_set():
+                return
+
             for res in results:
                 a = res["attacker"]
                 t = res["target"]
@@ -569,25 +706,56 @@ class BattleShipsGame:
                 a_wall = self._wall_for_player(a)
                 t_wall = self._wall_for_player(t)
 
+                if a_wall is None or t_wall is None:
+                    continue
+
                 if res["hit"]:
                     self._svc.set_led(a_wall, tile, *GREEN)
                     self._svc.set_led(t_wall, tile, *RED)
                 else:
                     self._svc.set_led(a_wall, tile, *YELLOW)
                     self._svc.set_led(t_wall, tile, *WHITE)
-            time.sleep(0.18)
-            self._draw_battle_leds()
-            time.sleep(0.10)
 
-        # Eliminated players flash red
+            end_t = time.perf_counter() + 0.12
+            while time.perf_counter() < end_t:
+                if self._stop.is_set() or stop_evt.is_set():
+                    return
+                time.sleep(0.005)
+
+            self._draw_battle_leds()
+
+            end_t = time.perf_counter() + 0.06
+            while time.perf_counter() < end_t:
+                if self._stop.is_set() or stop_evt.is_set():
+                    return
+                time.sleep(0.005)
+
+        # Flash eliminated players
         for p in eliminated_now:
             wall = self._wall_for_player(p)
-            for _ in range(3):
+            if wall is None:
+                continue
+
+            for _ in range(2):
+                if self._stop.is_set() or stop_evt.is_set():
+                    return
+
                 for led in range(LEDS_PER_CHANNEL):
                     self._svc.set_led(wall, led, *RED)
-                time.sleep(0.16)
+
+                end_t = time.perf_counter() + 0.10
+                while time.perf_counter() < end_t:
+                    if self._stop.is_set() or stop_evt.is_set():
+                        return
+                    time.sleep(0.005)
+
                 self._draw_battle_leds()
-                time.sleep(0.08)
+
+                end_t = time.perf_counter() + 0.05
+                while time.perf_counter() < end_t:
+                    if self._stop.is_set() or stop_evt.is_set():
+                        return
+                    time.sleep(0.005)
 
     def _do_game_over(self, winners):
         self.state = S_GAMEOVER
@@ -645,7 +813,7 @@ class BattleShipsGame:
             if self._all_ready():
                 break
 
-            time.sleep(0.05)
+            time.sleep(0.03)
 
         if self._stop.is_set():
             return
@@ -665,10 +833,13 @@ class BattleShipsGame:
             if len(alive) <= 1:
                 break
 
+            self._stop_feedback_thread()
             self._begin_round()
 
+            next_tick = time.perf_counter()
+
             while not self._stop.is_set():
-                now = time.time()
+                now = time.perf_counter()
                 round_left = max(0.0, self.round_deadline - now)
 
                 # Fast blink eye LEDs under 3 sec
@@ -695,6 +866,9 @@ class BattleShipsGame:
                             self._svc.set_led(wall, tile, *WHITE)
                         else:
                             self._svc.set_led(wall, tile, *PLAYER_COLORS_RGB[target])
+                else:
+                    # keep LEDs stable outside blink phase
+                    self._draw_battle_leds()
 
                 self._notify("tick", {
                     "round_index": self.round_index,
@@ -719,18 +893,23 @@ class BattleShipsGame:
                 if round_left <= 0:
                     break
 
-                time.sleep(0.05)
+                next_tick += self._tick_rate
+                sleep_time = next_tick - time.perf_counter()
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                else:
+                    # catch up if system lagged, no cumulative drift
+                    next_tick = time.perf_counter()
 
             if self._stop.is_set():
                 return
 
-            # Restore steady LEDs before resolving
             self._draw_battle_leds()
 
             attacks = self._collect_round_attacks()
             results, eliminated_now = self._resolve_round_simultaneous(attacks)
 
-            self._flash_round_feedback(results, eliminated_now)
+            self._start_feedback_thread(results, eliminated_now)
 
             self._notify("round_resolved", {
                 "results": [
@@ -755,7 +934,7 @@ class BattleShipsGame:
             if len(alive) == 0:
                 break
 
-            time.sleep(0.18)
+        self._stop_feedback_thread()
 
         alive = self._alive_players()
         if not self._stop.is_set():
@@ -763,7 +942,6 @@ class BattleShipsGame:
                 self._do_game_over(alive)
             elif len(alive) == 0:
                 self._do_game_over([])
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main Application
@@ -784,8 +962,9 @@ class BattleShipsApp(tk.Tk):
         self._service = LightService()
         self._service.on_status = lambda m: self.after(0, lambda msg=m: self._set_status(msg))
 
-        FIXED_IP = "255.255.255.255"
-        self._service.set_device(FIXED_IP, self._cfg.get("udp_port", 4626))
+        ip = self._cfg.get("device_ip", "127.0.0.1")
+        if ip:
+            self._service.set_device(ip, self._cfg.get("udp_port", 4626))
         self._service.set_recv_port(self._cfg.get("receiver_port", 7800))
         self._service.set_poll_rate(self._cfg.get("polling_rate_ms", 100))
         self._service.start_receiver()
@@ -798,7 +977,7 @@ class BattleShipsApp(tk.Tk):
         # ── Setup vars ────────────────────────────────────────────────────────
         self._v_players = tk.IntVar(value=2)
         self._v_player_names = [tk.StringVar(value=PLAYER_NAMES_DEFAULT[i]) for i in range(MAX_PLAYERS)]
-        self._v_device_ip = tk.StringVar(value="255.255.255.255")
+        self._v_device_ip = tk.StringVar(value=ip or "127.0.0.1")
 
         # ── Screens ───────────────────────────────────────────────────────────
         self._frame_setup = tk.Frame(self, bg=BG_DARK)
@@ -816,6 +995,144 @@ class BattleShipsApp(tk.Tk):
 
     def _show_game(self):
         self._frame_game.lift()
+    
+    def _choose_interface_dialog(self, interfaces):
+        """
+        Returns selected tuple: (iface_name, ip, bcast) or None
+        """
+        if not interfaces:
+            return None
+
+        result = {"value": None}
+
+        win = tk.Toplevel(self)
+        win.title("Select Network")
+        win.configure(bg=BG_DARK)
+        win.transient(self)
+        win.resizable(False, False)
+
+        tk.Label(
+            win,
+            text="Selectează rețeaua pentru device-ul de recepție",
+            bg=BG_DARK,
+            fg=FG_MAIN,
+            font=("Consolas", 12, "bold")
+        ).pack(padx=20, pady=(16, 10))
+
+        selected = tk.IntVar(value=0)
+
+        box = tk.Frame(win, bg=BG_DARK)
+        box.pack(padx=20, pady=(0, 12), fill=tk.BOTH, expand=True)
+
+        for i, (iface, ip, bcast) in enumerate(interfaces):
+            txt = f"[{i}] {iface} - {ip}"
+            rb = tk.Radiobutton(
+                box,
+                text=txt,
+                variable=selected,
+                value=i,
+                anchor="w",
+                justify="left",
+                bg=BG_DARK,
+                fg=FG_MAIN,
+                selectcolor=BG_PANEL,
+                activebackground=BG_DARK,
+                activeforeground=FG_MAIN,
+                font=("Consolas", 11),
+                highlightthickness=0
+            )
+            rb.pack(fill=tk.X, anchor="w", pady=2)
+
+        btns = tk.Frame(win, bg=BG_DARK)
+        btns.pack(pady=(0, 16))
+
+        def _ok():
+            idx = selected.get()
+            if 0 <= idx < len(interfaces):
+                result["value"] = interfaces[idx]
+            win.destroy()
+
+        def _cancel():
+            win.destroy()
+
+        _make_lbl_btn(
+            btns, "SCAN", _ok,
+            bg="#ff3c00", fg="white",
+            padx=18, pady=8, hover_bg="#cc3000"
+        ).pack(side=tk.LEFT, padx=6)
+
+        _make_lbl_btn(
+            btns, "CANCEL", _cancel,
+            bg="#444", fg="white",
+            padx=18, pady=8, hover_bg="#666"
+        ).pack(side=tk.LEFT, padx=6)
+
+        win.update_idletasks()
+        win.deiconify()
+        win.wait_visibility()
+        win.grab_set()
+        self.wait_window(win)
+
+        return result["value"]
+        def _ok():
+            idx = selected.get()
+            if 0 <= idx < len(interfaces):
+                result["value"] = interfaces[idx]
+            win.destroy()
+
+        def _cancel():
+            win.destroy()
+
+        _make_lbl_btn(
+            btns, "SCAN", _ok,
+            bg="#ff3c00", fg="white",
+            padx=18, pady=8, hover_bg="#cc3000"
+        ).pack(side=tk.LEFT, padx=6)
+
+        _make_lbl_btn(
+            btns, "CANCEL", _cancel,
+            bg="#444", fg="white",
+            padx=18, pady=8, hover_bg="#666"
+        ).pack(side=tk.LEFT, padx=6)
+
+        self.wait_window(win)
+        return result["value"]
+
+
+    def _run_discovery_flow_gui(self):
+        interfaces = get_local_interfaces()
+        if not interfaces:
+            self._set_status("No active network interfaces found.")
+            return None
+
+        selected = self._choose_interface_dialog(interfaces)
+        if not selected:
+            self._set_status("Network selection canceled.")
+            return None
+
+        iface_name, bind_ip, bcast_ip = selected
+        self._set_status(f"Scanning on {iface_name} ({bind_ip})...")
+
+        try:
+            devices = discover_devices_on_interface(
+                bind_ip=bind_ip,
+                broadcast_ip=bcast_ip,
+                recv_port=self._cfg.get("receiver_port", 7800),
+                send_port=self._cfg.get("udp_port", 4626),
+                timeout_s=3.0
+            )
+        except Exception as e:
+            self._set_status(f"Discovery failed: {e}")
+            return None
+
+        if devices:
+            found_ip = devices[0]["ip"]
+            model = devices[0]["model"]
+            self._set_status(f"Found {model} at {found_ip}")
+            return found_ip
+
+        self._set_status("No devices found. Using current config.")
+        return None
 
     # ─────────────────────────────────────────────────────────────────────────
     # SETUP SCREEN
@@ -886,14 +1203,19 @@ class BattleShipsApp(tk.Tk):
         tk.Label(content, text=rules, justify="left", bg=BG_DARK, fg=FG_DIM,
                  font=("Consolas", 10)).grid(row=row, column=0, columnspan=2, pady=(0, 14)); row += 1
 
-        self._setup_lbl(content, "NETWORK", row); row += 1
-        tk.Label(
-            content,
-            text="Device IP fixed: 255.255.255.255",
-            bg=BG_DARK,
-            fg=FG_DIM,
-            font=("Consolas", 10)
-        ).grid(row=row, column=0, columnspan=2, pady=(0, 14)); row += 1
+        self._setup_lbl(content, "DEVICE IP", row); row += 1
+        ip_row = tk.Frame(content, bg=BG_DARK)
+        ip_row.grid(row=row, column=0, columnspan=2, pady=(0, 14)); row += 1
+
+        tk.Entry(ip_row, textvariable=self._v_device_ip,
+                 width=20, bg=BG_PANEL, fg=FG_MAIN,
+                 font=("Consolas", 13), insertbackground="white",
+                 relief="flat", highlightthickness=1,
+                 highlightbackground="#444").pack(side=tk.LEFT, padx=6)
+
+        _make_lbl_btn(ip_row, "APPLY", self._apply_ip,
+                      bg="#444", padx=12, pady=5,
+                      font=FONT_XS, hover_bg="#666").pack(side=tk.LEFT, padx=4)
 
     def _setup_lbl(self, parent, text, row):
         tk.Label(parent, text=text, bg=BG_DARK, fg=FG_DIM,
@@ -1122,8 +1444,25 @@ class BattleShipsApp(tk.Tk):
             self._update_turn_bar(0, 1)
 
     # ── Controls ──────────────────────────────────────────────────────────────
+    def _apply_ip(self):
+        ip = self._v_device_ip.get().strip()
+        self._service.set_device(ip, self._cfg.get("udp_port", 4626))
+        self._cfg["device_ip"] = ip
+        save_config(self._cfg)
+        self._set_status(f"Device → {ip}")
 
     def _start_game(self):
+        # 1) user chooses network + discovery runs
+        discovered_ip = self._run_discovery_flow_gui()
+
+        # 2) if a device is found, set it automatically
+        if discovered_ip:
+            self._v_device_ip.set(discovered_ip)
+
+        # 3) apply current/found IP
+        self._apply_ip()
+
+        # 4) start game
         names = [v.get() for v in self._v_player_names]
         self._game.start_game(
             num_players=self._v_players.get(),
