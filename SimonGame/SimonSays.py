@@ -18,9 +18,9 @@ except ImportError:
 # =========================================================
 def _load_config():
     return {
-        "device_ip": "192.168.1.135",
-        "send_port": 4227,
-        "recv_port": 4444,
+        "device_ip": "255.255.255.255",
+        "send_port": 4626,
+        "recv_port": 7800,
         "bind_ip": "0.0.0.0",
     }
 
