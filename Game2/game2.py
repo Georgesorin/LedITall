@@ -44,8 +44,8 @@ SONG_DATA = {}
 # and the big LED light wall can talk to each other without getting confused.
 # ==============================================================================
 UDP_SEND_IP         = "255.255.255.255" # Broadcast to everyone on the network
-UDP_SEND_PORT_MAIN  = 4226 # Port to send the pixel colors to the LED wall
-UDP_LISTEN_PORT     = 4444 # Port to listen for when someone steps on a physical floor tile
+UDP_SEND_PORT_MAIN  = 4626 # Port to send the pixel colors to the LED wall
+UDP_LISTEN_PORT     = 7800 # Port to listen for when someone steps on a physical floor tile
 
 UDP_SCORE_PORT      = 4445 # Port to send the game score to the 2nd screen
 UDP_SCORE_IP        = "127.0.0.1" # Send score to this same computer (localhost)
