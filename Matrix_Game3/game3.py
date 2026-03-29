@@ -4,6 +4,12 @@ import threading
 import random
 import os
 import math
+import tkinter as tk  
+
+# --- CONFIGURARE DASHBOARD (MONITOR 2) ---
+DASHBOARD_FULLSCREEN = False  # Schimba in True cand pui in productie
+DASHBOARD_MONITOR = 1         # 0 = Primul monitor, 1 = Al doilea monitor
+# -----------------------------------------
 
 try:
     import pygame
@@ -33,8 +39,8 @@ BLUE = (0, 0, 255)
 YELLOW = (255, 255, 0)
 CYAN = (0, 255, 255)
 MAGENTA = (255, 0, 255)
-ORANGE = (255, 165, 0)
-PURPLE = (128, 0, 128)
+ORANGE = (194, 75, 19)
+PURPLE = (90, 33, 156)
 PINK = (255, 133, 158) 
 
 COLORS_LIST = [PINK, GREEN, BLUE, YELLOW, CYAN, MAGENTA, ORANGE, PURPLE]
@@ -78,14 +84,14 @@ class SoundManager:
             try:
                 bgm_path = os.path.join(self.base_dir, "bgm.wav")
                 pygame.mixer.music.load(bgm_path)
-                pygame.mixer.music.set_volume(0.3) 
+                pygame.mixer.music.set_volume(1.0) 
             except:
                 print("Eroare la incarcarea bgm.wav")
 
     def _generate_sounds(self):
         import wave, struct
         
-        def make_wav(name, freq, duration, volume=0.5):
+        def make_wav(name, freq, duration, volume=1.0):
             filepath = os.path.join(self.base_dir, name) 
             if os.path.exists(filepath): return
             sample_rate = 44100
@@ -554,7 +560,7 @@ class PhysicalBlockParty:
             if self.round_timer <= 0:
                 self.generate_blocks()
                 self.state = 'PLAYING'
-                self.round_timer = max(3, 6.4 - (self.round * 0.4))
+                self.round_timer = max(2.5, 6.4 - (self.round * 0.4))
                 self.last_second_beep = int(self.round_timer)
                 
                 self.audio.play_bgm()
@@ -681,30 +687,11 @@ class Dashboard:
     def __init__(self, game):
         self.game = game
         self.running = True
-        
-        if not pygame.get_init():
-            pygame.init()
-            
-        num_displays = pygame.display.get_num_displays()
-        # Forteaza al doilea monitor (index 1) daca e disponibil, altfel index 0
-        target_display = 1 if num_displays > 1 else 0
-        
-        # Deschide fereastra pe tot ecranul pe monitorul target
-        self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN, display=target_display)
-        pygame.display.set_caption("Matrix Room Dashboard")
-        
-        # Facem fonturile un pic mai mari pentru un fullscreen pe 1080p
-        pygame.font.init()
-        try:
-            self.font_large = pygame.font.SysFont("courier", 200, bold=True)
-            self.font_medium = pygame.font.SysFont("courier", 100, bold=True)
-            self.font_small = pygame.font.SysFont("courier", 80, bold=True)
-        except:
-            self.font_large = pygame.font.Font(None, 200)
-            self.font_medium = pygame.font.Font(None, 100)
-            self.font_small = pygame.font.Font(None, 80)
-            
-        self.clock = pygame.time.Clock()
+        self.screen = None
+        self.font_large = None
+        self.font_medium = None
+        self.font_small = None
+        self.clock = None
 
     def format_time(self, seconds):
         if seconds <= 0:
@@ -714,22 +701,48 @@ class Dashboard:
         return f"{m:02d}:{s:02d}"
 
     def run(self):
-        # Aflam dimensiunile ecranului pentru a centra textul frumos
-        screen_width, screen_height = self.screen.get_size()
+        if not PYGAME_AVAILABLE:
+            return
+            
+        if not pygame.get_init():
+            pygame.init()
+            
+        num_displays = pygame.display.get_num_displays()
+        target_display = DASHBOARD_MONITOR if num_displays > DASHBOARD_MONITOR else 0
+        
+        if DASHBOARD_FULLSCREEN:
+            self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN, display=target_display)
+        else:
+            # Fereastra mai mica pentru teste locale
+            self.screen = pygame.display.set_mode((800, 600), pygame.RESIZABLE, display=target_display)
+            
+        pygame.display.set_caption("Block Party - Scor (Monitor 2)")
+        
+        try:
+            self.font_large = pygame.font.SysFont("courier", 180, bold=True)
+            self.font_medium = pygame.font.SysFont("courier", 80, bold=True)
+            self.font_small = pygame.font.SysFont("courier", 60, bold=True)
+        except:
+            self.font_large = pygame.font.Font(None, 180)
+            self.font_medium = pygame.font.Font(None, 80)
+            self.font_small = pygame.font.Font(None, 60)
+            
+        self.clock = pygame.time.Clock()
         
         while self.running and self.game.running:
+            screen_width, screen_height = self.screen.get_size()
+            center_x = screen_width // 2
+            
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
                     self.game.running = False 
-                # Adaugam ESCAPE pentru a putea inchide usor fereastra FullScreen
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         self.running = False
                         self.game.running = False
 
-            # Fundal negru
-            self.screen.fill((10, 10, 15))
+            self.screen.fill((15, 15, 20))
             
             with self.game.lock:
                 score = self.game.score
@@ -737,43 +750,43 @@ class Dashboard:
                 time_left = self.game.global_timer
                 state = self.game.state
 
-            # Randam state/runda (Sus centrat)
-            if state == 'WAITING_TO_START':
+            # Randam Starea
+            if getattr(self.game, 'is_paused', False):
+                status_text = "PAUZA"
+                status_color = (255, 255, 0)
+            elif state == 'WAITING_TO_START':
                 status_text = "ASTEAPTA START"
                 status_color = (150, 150, 150)
             elif state == 'GAME_FINISHED':
                 status_text = "JOC TERMINAT"
                 status_color = (255, 50, 50)
-            elif state in ['SHOW_TARGET', 'PLAYING']:
+            else:
                 status_text = f"RUNDA {round_num}"
                 status_color = (50, 255, 50)
-            else:
-                status_text = f"RUNDA {round_num} (Pauza)"
-                status_color = (255, 255, 0)
                 
             surf_status = self.font_small.render(status_text, True, status_color)
-            status_rect = surf_status.get_rect(center=(screen_width // 2, screen_height // 6))
+            status_rect = surf_status.get_rect(center=(center_x, screen_height * 0.15))
             self.screen.blit(surf_status, status_rect)
 
-            # Randam Timpul (Mijloc centrat)
+            # Randam Timpul
             time_str = self.format_time(time_left)
             time_color = (255, 50, 50) if time_left > 0 and time_left < 60 else (255, 255, 255)
             
             surf_time_label = self.font_medium.render("TIMP RAMAS:", True, (200, 200, 200))
             surf_time = self.font_large.render(time_str, True, time_color)
             
-            time_label_rect = surf_time_label.get_rect(center=(screen_width // 2, screen_height // 2 - 100))
-            time_rect = surf_time.get_rect(center=(screen_width // 2, screen_height // 2 + 50))
+            time_label_rect = surf_time_label.get_rect(center=(center_x, screen_height * 0.38))
+            time_rect = surf_time.get_rect(center=(center_x, screen_height * 0.52))
             
             self.screen.blit(surf_time_label, time_label_rect)
             self.screen.blit(surf_time, time_rect)
 
-            # Randam Scorul (Jos centrat)
+            # Randam Scorul
             surf_score_label = self.font_medium.render("SCOR:", True, (200, 200, 200))
             surf_score = self.font_large.render(f"{score}", True, (50, 200, 255))
             
-            score_label_rect = surf_score_label.get_rect(center=(screen_width // 2, screen_height * 5 // 6 - 50))
-            score_rect = surf_score.get_rect(center=(screen_width // 2, screen_height * 5 // 6 + 50))
+            score_label_rect = surf_score_label.get_rect(center=(center_x, screen_height * 0.75))
+            score_rect = surf_score.get_rect(center=(center_x, screen_height * 0.88))
             
             self.screen.blit(surf_score_label, score_label_rect)
             self.screen.blit(surf_score, score_rect)
@@ -786,43 +799,102 @@ class Dashboard:
 
 if __name__ == "__main__":
     game = PhysicalBlockParty()
-    net = NetworkManager(game)
+    game.is_paused = False # Variabila custom pentru pauza
     
+    net = NetworkManager(game)
     threading.Thread(target=net.send_loop, daemon=True).start()
     threading.Thread(target=net.recv_loop, daemon=True).start()
     
-    print("="*40)
-    print("MATRIX ROOM: BLOCK PARTY MARATHON")
-    print("="*40)
-    print("Jocul incepe ACUM!")
-    print("Fereastra cu ecranul de Scor se afla pe al doilea monitor (sau in fundal).")
-    print("Poti apasa ESCAPE cand ai selectata fereastra cu scorul, sau scrie 'quit' aici pentru a inchide.")
-    
+    # --- Bucla de logica ce permite PAUZA ---
     def logic_loop():
         while game.running:
-            game.tick()
+            if getattr(game, 'is_paused', False):
+                # Daca e pe pauza, tineti timpul "inghetat" ca sa nu scada brusc la repornire
+                game.last_tick_time = time.time()
+            else:
+                game.tick()
             time.sleep(0.01) 
             
     threading.Thread(target=logic_loop, daemon=True).start()
     
-    # --- JOCUL INCEPE AUTOMAT AICI ---
-    game.initiate_start_sequence()
-    
-    def input_loop():
-        try:
-            while game.running:
-                cmd = input("> ").strip().lower()
-                if cmd == 'quit' or cmd == 'exit':
-                    game.running = False
-                    break
-        except KeyboardInterrupt:
-            game.running = False
-            
-    threading.Thread(target=input_loop, daemon=True).start()
-    
-    # Rulam dashboard-ul in thread-ul principal (blocheaza aici pana la inchidere)
+    # --- Pornim ecranul secundar pe fundal ---
     dashboard = Dashboard(game)
-    dashboard.run()
+    threading.Thread(target=dashboard.run, daemon=True).start()
 
-    game.running = False
+    # --- INTERFATA GRAFICA PENTRU CONTROL (MONITOR 1) ---
+    root = tk.Tk()
+    root.title("Panou Control - Block Party")
+    
+    # Setăm o mărime inițială mare, dar o facem să se adapteze
+    root.geometry("1000x700") 
+    root.configure(bg="#2d2d2d")
+    
+    # Containerul principal care va sta pe tot ecranul și va centra totul
+    main_container = tk.Frame(root, bg="#2d2d2d")
+    main_container.place(relx=0.5, rely=0.5, anchor=tk.CENTER) # Centrare absolută pe mijlocul ferestrei
+
+    # Titlu Uriaș
+    lbl_title = tk.Label(main_container, text="BLOCK PARTY", font=("Courier", 70, "bold"), bg="#2d2d2d", fg="white")
+    lbl_title.pack(pady=40)
+    
+    # Timp Uriaș
+    lbl_time = tk.Label(main_container, text="TIMP: 00:00", font=("Courier", 60, "bold"), bg="#2d2d2d", fg="#ff4d4d")
+    lbl_time.pack(pady=20)
+    
+    # Scor Uriaș
+    lbl_score = tk.Label(main_container, text="SCOR: 0", font=("Courier", 60, "bold"), bg="#2d2d2d", fg="#33ccff")
+    lbl_score.pack(pady=20)
+    
+    def on_start():
+        game.is_paused = False
+        if PYGAME_AVAILABLE: pygame.mixer.music.unpause()
+        btn_pause.config(text="PAUZA", bg="orange")
+        game.initiate_start_sequence()
+        
+    def on_pause():
+        if game.state == 'WAITING_TO_START' or game.state == 'GAME_FINISHED':
+            return
+        game.is_paused = not getattr(game, 'is_paused', False)
+        if game.is_paused:
+            btn_pause.config(text="REIA JOCUL", bg="yellow")
+            if PYGAME_AVAILABLE: pygame.mixer.music.pause()
+        else:
+            btn_pause.config(text="PAUZA", bg="orange")
+            if PYGAME_AVAILABLE: pygame.mixer.music.unpause()
+
+    # Cadrul pentru butoane mari stânga-dreapta
+    btn_frame = tk.Frame(main_container, bg="#2d2d2d")
+    btn_frame.pack(pady=50)
+
+    # Butoane mult mai masive
+    btn_start = tk.Button(btn_frame, text="START", font=("Arial", 40, "bold"), 
+                          bg="green", fg="white", command=on_start, 
+                          width=10, height=2, cursor="hand2")
+    btn_start.pack(side=tk.LEFT, padx=30)
+    
+    btn_pause = tk.Button(btn_frame, text="PAUZA", font=("Arial", 40, "bold"), 
+                          bg="orange", fg="black", command=on_pause, 
+                          width=10, height=2, cursor="hand2")
+    btn_pause.pack(side=tk.RIGHT, padx=30)
+    
+    def update_gui():
+        if game.running:
+            secs = max(0, game.global_timer)
+            m = int(secs // 60)
+            s = int(secs % 60)
+            lbl_time.config(text=f"TIMP: {m:02d}:{s:02d}")
+            lbl_score.config(text=f"SCOR: {game.score}")
+            root.after(100, update_gui)
+            
+    update_gui()
+    
+    def on_closing():
+        game.running = False
+        dashboard.running = False
+        root.destroy()
+        
+    root.protocol("WM_DELETE_WINDOW", on_closing)
+    root.mainloop()
+
+    # Cand inchizi fereastra mica, curatam restul
     net.running = False
