@@ -4,6 +4,7 @@ import threading
 import random
 import math
 import os
+import tkinter as tk
 
 # =========================================================
 #                      CONFIGURATION
@@ -18,9 +19,9 @@ def _load_config():
 
 CONFIG = _load_config()
 
-UDP_SEND_IP = CONFIG.get("device_ip", "192.168.1.135")
-UDP_SEND_PORT = CONFIG.get("send_port", 4227)
-UDP_LISTEN_PORT = CONFIG.get("recv_port", 4444)
+UDP_SEND_IP = CONFIG.get("device_ip", "255.255.255.255")
+UDP_SEND_PORT = CONFIG.get("send_port", 4626)
+UDP_LISTEN_PORT = CONFIG.get("recv_port", 7800)
 
 # =========================================================
 #                      MATRIX CONSTANTS
@@ -32,8 +33,9 @@ FRAME_DATA_LENGTH = NUM_CHANNELS * LEDS_PER_CHANNEL * 3
 BOARD_WIDTH = 16
 BOARD_HEIGHT = 32
 
-GAME_DURATION_MINUTES = 3      # N minute tot jocul
+GAME_DURATION_MINUTES = 6      # N minute tot jocul
 ROUND_DURATION_SECONDS = 6     # M secunde pentru fiecare rundă
+BASE_SCORE = 100
 
 BLACK   = (0, 0, 0)
 WHITE   = (220, 220, 220)
@@ -86,6 +88,138 @@ FONT_5X7 = {
     "3": ["11110","00001","00001","01110","00001","00001","11110"]
 }
 
+# =========================================================
+#                            HUD
+# =========================================================
+
+class HelperDisplay:
+    def __init__(self, game):
+        self.game = game
+        self.root = tk.Tk()
+        self.root.title("Simon Game Helper Display")
+        self.root.configure(bg="black")
+
+        # fullscreen; dacă vrei doar fereastră normală, comentezi linia asta
+        self.root.state("normal")
+        self.root.geometry("1920x1080+1920+0")
+        self.root.configure(bg="black")
+
+        # ESC închide doar fereastra helper
+        self.root.bind("<Escape>", self.close)
+
+        self.score_var = tk.StringVar(value="0")
+        self.time_var = tk.StringVar(value="03:00")
+        self.level_var = tk.StringVar(value="1")
+        self.state_var = tk.StringVar(value="WAITING")
+
+        container = tk.Frame(self.root, bg="black")
+        container.pack(expand=True, fill="both")
+
+        title = tk.Label(
+            container,
+            text="SIMON GAME",
+            font=("Arial", 34, "bold"),
+            fg="white",
+            bg="black"
+        )
+        title.pack(pady=(40, 20))
+
+        score_title = tk.Label(
+            container,
+            text="SCOR",
+            font=("Arial", 28, "bold"),
+            fg="#00ff88",
+            bg="black"
+        )
+        score_title.pack(pady=(20, 5))
+
+        score_value = tk.Label(
+            container,
+            textvariable=self.score_var,
+            font=("Arial", 72, "bold"),
+            fg="#00ff88",
+            bg="black"
+        )
+        score_value.pack(pady=(0, 30))
+
+        time_title = tk.Label(
+            container,
+            text="TIMP RAMAS",
+            font=("Arial", 28, "bold"),
+            fg="#ffd400",
+            bg="black"
+        )
+        time_title.pack(pady=(10, 5))
+
+        time_value = tk.Label(
+            container,
+            textvariable=self.time_var,
+            font=("Arial", 64, "bold"),
+            fg="#ffd400",
+            bg="black"
+        )
+        time_value.pack(pady=(0, 30))
+
+        level_title = tk.Label(
+            container,
+            text="NIVEL",
+            font=("Arial", 24, "bold"),
+            fg="#66ccff",
+            bg="black"
+        )
+        level_title.pack(pady=(10, 5))
+
+        level_value = tk.Label(
+            container,
+            textvariable=self.level_var,
+            font=("Arial", 42, "bold"),
+            fg="#66ccff",
+            bg="black"
+        )
+        level_value.pack(pady=(0, 20))
+
+        state_value = tk.Label(
+            container,
+            textvariable=self.state_var,
+            font=("Arial", 22, "bold"),
+            fg="#ff6666",
+            bg="black"
+        )
+        state_value.pack(pady=(20, 40))
+
+        self.running = True
+        self.update_loop()
+
+    def format_mmss(self, seconds):
+        seconds = max(0, int(seconds))
+        m = seconds // 60
+        s = seconds % 60
+        return f"{m:02}:{s:02}"
+
+    def update_loop(self):
+        if not self.running:
+            return
+
+        try:
+            self.score_var.set(str(self.game.score))
+            self.time_var.set(self.format_mmss(self.game.get_game_time_left()))
+            self.level_var.set(str(max(1, self.game.level)))
+            self.state_var.set(self.game.state.upper())
+        except Exception:
+            pass
+
+        self.root.after(100, self.update_loop)
+
+    def close(self, event=None):
+        self.running = False
+        try:
+            self.root.destroy()
+        except:
+            pass
+
+    def run(self):
+        self.root.mainloop()
+
 
 # =========================================================
 #                         SIMON GAME
@@ -99,6 +233,9 @@ class SimonGame:
         # stări butoane hardware
         self.button_states = [False] * 512
         self.prev_button_states = [False] * 512
+
+        self.score = 0
+        self.base_score = BASE_SCORE
 
         self.tile_w = 4
         self.tile_h = 1
@@ -545,10 +682,23 @@ class SimonGame:
     # -----------------------------------------------------
     #                     GAME FLOW
     # -----------------------------------------------------
+    def calculate_score_gain(self):
+        total_time = self.game_duration_sec
+        time_left = self.get_game_time_left()
+
+        elapsed = total_time - time_left
+        elapsed = max(1.0, elapsed)
+
+        sequence_length = len(self.sequence)
+
+        gain = self.base_score * sequence_length * (1.0 / math.sqrt(elapsed))
+        return int(round(gain))
+
     def start_new_game(self):
         self.sequence = []
         self.player_index = 0
         self.level = 0
+        self.score = 0
         self.pressed_tiles.clear()
 
         self.game_start_time = time.time()
@@ -558,8 +708,16 @@ class SimonGame:
 
         self.add_random_step()
         self.show_sequence_async()
+
     def add_random_step(self):
-        self.sequence.append(random.randint(0, len(self.tiles) - 1))
+        if not self.sequence:
+            new_tile = random.randint(0, len(self.tiles) - 1)
+        else:
+            last_tile = self.sequence[-1]
+            choices = [i for i in range(len(self.tiles)) if i != last_tile]
+            new_tile = random.choice(choices)
+
+        self.sequence.append(new_tile)
         self.level = len(self.sequence)
 
     def show_sequence_async(self):
@@ -574,8 +732,11 @@ class SimonGame:
         self.draw_sequence_background()
         time.sleep(0.18)
 
-        for tile_id in self.sequence:
-            self.flash_tile(tile_id, duration=0.42)
+        for idx, tile_id in enumerate(self.sequence):
+            if len(self.sequence) == 1 and idx == 0:
+                self.flash_tile(tile_id, duration=2.0)
+            else:
+                self.flash_tile(tile_id, duration=0.42)
 
         self.draw_all_tiles(dim=False)
         self.round_deadline = time.time() + self.get_round_duration()
@@ -607,7 +768,7 @@ class SimonGame:
         while time.time() < end_time and self.running:
             self.clear_board()
             self.draw_border()
-            self.draw_clock_pie(0, base_color=(60, 0, 0), active_color=RED)
+            self.draw_clock_pie(0, color=RED, off_color=(60, 0, 0))
             time.sleep(0.06)
 
         # dacă vrei să repornească automat:
@@ -701,6 +862,9 @@ class SimonGame:
         if tile_id == expected:
             self.player_index += 1
             if self.player_index >= len(self.sequence):
+                gained = self.calculate_score_gain()
+                self.score += gained
+
                 self.state = "success"
                 self.round_deadline = None
                 self.success_async()
@@ -1003,6 +1167,11 @@ if __name__ == "__main__":
     net = NetworkManager(game)
     net.start_bg()
 
+    # pornim UI helper intr-un thread separat
+    helper_display = HelperDisplay(game)
+    ui_thread = threading.Thread(target=helper_display.run, daemon=True)
+    ui_thread.start()
+
     # Pornim intro-ul DUPĂ ce pornește rețeaua
     game.play_intro_then_start_async()
 
@@ -1024,4 +1193,5 @@ if __name__ == "__main__":
         game.running = False
 
     net.running = False
+    helper_display.close()
     print("Exiting...")
