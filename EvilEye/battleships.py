@@ -784,9 +784,8 @@ class BattleShipsApp(tk.Tk):
         self._service = LightService()
         self._service.on_status = lambda m: self.after(0, lambda msg=m: self._set_status(msg))
 
-        ip = self._cfg.get("device_ip", "127.0.0.1")
-        if ip:
-            self._service.set_device(ip, self._cfg.get("udp_port", 4626))
+        FIXED_IP = "255.255.255.255"
+        self._service.set_device(FIXED_IP, self._cfg.get("udp_port", 4626))
         self._service.set_recv_port(self._cfg.get("receiver_port", 7800))
         self._service.set_poll_rate(self._cfg.get("polling_rate_ms", 100))
         self._service.start_receiver()
@@ -799,7 +798,7 @@ class BattleShipsApp(tk.Tk):
         # ── Setup vars ────────────────────────────────────────────────────────
         self._v_players = tk.IntVar(value=2)
         self._v_player_names = [tk.StringVar(value=PLAYER_NAMES_DEFAULT[i]) for i in range(MAX_PLAYERS)]
-        self._v_device_ip = tk.StringVar(value=ip or "127.0.0.1")
+        self._v_device_ip = tk.StringVar(value="255.255.255.255")
 
         # ── Screens ───────────────────────────────────────────────────────────
         self._frame_setup = tk.Frame(self, bg=BG_DARK)
@@ -887,19 +886,14 @@ class BattleShipsApp(tk.Tk):
         tk.Label(content, text=rules, justify="left", bg=BG_DARK, fg=FG_DIM,
                  font=("Consolas", 10)).grid(row=row, column=0, columnspan=2, pady=(0, 14)); row += 1
 
-        self._setup_lbl(content, "DEVICE IP", row); row += 1
-        ip_row = tk.Frame(content, bg=BG_DARK)
-        ip_row.grid(row=row, column=0, columnspan=2, pady=(0, 14)); row += 1
-
-        tk.Entry(ip_row, textvariable=self._v_device_ip,
-                 width=20, bg=BG_PANEL, fg=FG_MAIN,
-                 font=("Consolas", 13), insertbackground="white",
-                 relief="flat", highlightthickness=1,
-                 highlightbackground="#444").pack(side=tk.LEFT, padx=6)
-
-        _make_lbl_btn(ip_row, "APPLY", self._apply_ip,
-                      bg="#444", padx=12, pady=5,
-                      font=FONT_XS, hover_bg="#666").pack(side=tk.LEFT, padx=4)
+        self._setup_lbl(content, "NETWORK", row); row += 1
+        tk.Label(
+            content,
+            text="Device IP fixed: 255.255.255.255",
+            bg=BG_DARK,
+            fg=FG_DIM,
+            font=("Consolas", 10)
+        ).grid(row=row, column=0, columnspan=2, pady=(0, 14)); row += 1
 
     def _setup_lbl(self, parent, text, row):
         tk.Label(parent, text=text, bg=BG_DARK, fg=FG_DIM,
@@ -1128,15 +1122,8 @@ class BattleShipsApp(tk.Tk):
             self._update_turn_bar(0, 1)
 
     # ── Controls ──────────────────────────────────────────────────────────────
-    def _apply_ip(self):
-        ip = self._v_device_ip.get().strip()
-        self._service.set_device(ip, self._cfg.get("udp_port", 4626))
-        self._cfg["device_ip"] = ip
-        save_config(self._cfg)
-        self._set_status(f"Device → {ip}")
 
     def _start_game(self):
-        self._apply_ip()
         names = [v.get() for v in self._v_player_names]
         self._game.start_game(
             num_players=self._v_players.get(),
