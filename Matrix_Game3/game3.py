@@ -10,7 +10,7 @@ import math
 import tkinter as tk  
 
 # --- DASHBOARD CONFIGURATION (MONITOR 2) ---
-DASHBOARD_FULLSCREEN = False  # Change to True for production
+DASHBOARD_FULLSCREEN = True  # Change to True for production
 DASHBOARD_MONITOR = 1         # 0 = First monitor, 1 = Second monitor
 # -----------------------------------------
 
@@ -22,8 +22,8 @@ except ImportError:
 
 # --- Matrix Room Network Configuration ---
 UDP_SEND_IP = "255.255.255.255"
-UDP_SEND_PORT = 6967
-UDP_LISTEN_PORT = 5555
+UDP_SEND_PORT = 6967     #4626
+UDP_LISTEN_PORT = 5555   #7800
 
 NUM_CHANNELS = 8
 LEDS_PER_CHANNEL = 64
@@ -767,6 +767,7 @@ class Dashboard:
         target_display = DASHBOARD_MONITOR if num_displays > DASHBOARD_MONITOR else 0
         
         if DASHBOARD_FULLSCREEN:
+            # Use (0,0) with FULLSCREEN to automatically pick the monitor's native resolution
             self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN, display=target_display)
         else:
             self.screen = pygame.display.set_mode((800, 600), pygame.RESIZABLE, display=target_display)
@@ -900,7 +901,16 @@ if __name__ == "__main__":
     # --- GRAPHICAL CONTROL INTERFACE (MONITOR 1) ---
     root = tk.Tk()
     root.title("Control Panel - Block Party")
-    root.geometry("1000x700") 
+
+    if DASHBOARD_FULLSCREEN:
+        # This makes the Tkinter window cover the entire primary monitor
+        root.attributes("-fullscreen", True)
+        
+        # SAFETY FEATURE: Pressing 'Escape' on the control panel exits fullscreen
+        root.bind("<Escape>", lambda e: root.attributes("-fullscreen", False))
+    else:
+        root.geometry("1000x700")
+        root.geometry("1000x700") 
     
     # Modern Dark Theme color palette
     BG_MAIN = "#121218" 
