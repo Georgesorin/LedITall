@@ -6,7 +6,13 @@ import colorsys
 UDP_IP, UDP_PORT = "127.0.0.1", 4445
 
 pygame.init()
-screen = pygame.display.set_mode((1280, 720), pygame.RESIZABLE)
+
+# --- 1. MODIFICARE: SELECTARE MONITOR SECUNDAR ---
+num_displays = pygame.display.get_num_displays()
+target_display = 1 if num_displays > 1 else 0 # Pune pe monitorul 2 dacă există
+screen = pygame.display.set_mode((1280, 720), pygame.RESIZABLE, display=target_display)
+# ------------------------------------------------
+
 pygame.display.set_caption("🏆 LIVE SCOREBOARD")
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -26,10 +32,17 @@ while running:
         if event.type == pygame.QUIT: running = False
         if event.type == pygame.KEYDOWN and event.key == pygame.K_f: pygame.display.toggle_fullscreen()
 
+    # --- 2. MODIFICARE: REZOLVARE LAG UDP ---
+    # Citim toate pachetele care s-au adunat ca să afișăm doar scorul la zi
     try:
-        packet, _ = sock.recvfrom(2048)
-        data = json.loads(packet.decode())
-    except: pass
+        while True:
+            packet, _ = sock.recvfrom(2048)
+            data = json.loads(packet.decode())
+    except BlockingIOError:
+        pass # Am golit coada, totul e in timp real
+    except Exception:
+        pass
+    # ----------------------------------------
 
     screen.fill((10, 10, 20)) 
     f_title, f_score, f_timer = pygame.font.SysFont("Impact", 45), pygame.font.SysFont("Impact", 65), pygame.font.SysFont("Impact", 120)
@@ -51,7 +64,7 @@ while running:
 
         for i in range(n):
             y_pos = start_y + i * (bar_h + spacing)
-            color = [int(c*255) for c in colorsys.hsv_to_rgb(i/6.0, 0.8, 1)]
+            color = [int(c*255) for c in colorsys.hsv_to_rgb(i/max(1.0, float(n)), 0.8, 1)] # Evitam împarțirea fixă la 6.0
             rect = pygame.Rect(0, y_pos, bar_w, bar_h)
             rect.centerx = screen.get_width() // 2
             
