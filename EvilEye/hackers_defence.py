@@ -39,6 +39,12 @@ from Controller import (
     LEDS_PER_CHANNEL,
 )
 
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except Exception:
+    PSUTIL_AVAILABLE = False
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
@@ -46,10 +52,10 @@ MAX_WALLS = 4
 MIN_WALLS = 2
 
 EYE_LED = 0
-BUTTONS = list(range(1, 11))
+BUTTONS = list(range(1, 11))   # protocol buttons = 1..10
 
 OVERLOAD_LIMIT = 5
-MAX_GAME_SECONDS = 600.0  # 10 minutes total
+MAX_GAME_SECONDS = 600.0
 BASE_STAGE_SECONDS = 30.0
 STAGE_STEP_SECONDS = 10.0
 
@@ -87,9 +93,9 @@ FG_BLUE  = "#44aaff"
 FONT_SM = ("Consolas", 12, "bold")
 FONT_XS = ("Consolas", 10)
 
-TICK_RATE = 1.0 / 30.0
+TICK_RATE = 1.0 / 20.0
+INPUT_DEBOUNCE_S = 0.08
 
-# Stage difficulty presets by stage index (1-based), then continue formulaically
 STAGE_CONFIGS = [
     {"spawn_interval": 1.40, "spawn_count": 1},
     {"spawn_interval": 1.15, "spawn_count": 1},
@@ -163,6 +169,39 @@ def broadcast_from_ip_mask(ip: str, netmask: str) -> str:
 
 def get_local_interfaces():
     interfaces = []
+
+    if PSUTIL_AVAILABLE:
+        seen = set()
+        for iface_name, addrs in psutil.net_if_addrs().items():
+            for addr in addrs:
+                if addr.family != socket.AF_INET:
+                    continue
+
+                ip = getattr(addr, "address", "")
+                if not ip or ip.startswith("127."):
+                    continue
+
+                bcast = getattr(addr, "broadcast", None)
+                mask = getattr(addr, "netmask", None)
+
+                if not bcast:
+                    if ip.startswith("169.254."):
+                        bcast = "169.254.255.255"
+                    elif mask:
+                        try:
+                            bcast = broadcast_from_ip_mask(ip, mask)
+                        except Exception:
+                            bcast = "255.255.255.255"
+                    else:
+                        bcast = "255.255.255.255"
+
+                interfaces.append((iface_name, ip, bcast))
+
+        if interfaces:
+            interfaces.sort(key=lambda item: (0 if item[1].startswith("169.254.") else 1, item[0], item[1]))
+            return interfaces
+
+    # fallback fără psutil
     seen = set()
     hostname = socket.gethostname()
     candidates = set()
@@ -192,18 +231,10 @@ def get_local_interfaces():
     except Exception:
         pass
 
-    ordered = sorted(
-        candidates,
-        key=lambda ip: (0 if ip.startswith("169.254.") else 1, ip)
-    )
-
+    ordered = sorted(candidates, key=lambda ip: (0 if ip.startswith("169.254.") else 1, ip))
     for idx, ip in enumerate(ordered):
         iface_name = "Ethernet" if ip.startswith("169.254.") else f"Interface {idx}"
-        if ip.startswith("169.254."):
-            bcast = "169.254.255.255"
-        else:
-            bcast = broadcast_from_ip_mask(ip, "255.255.255.0")
-
+        bcast = "169.254.255.255" if ip.startswith("169.254.") else broadcast_from_ip_mask(ip, "255.255.255.0")
         key = (iface_name, ip, bcast)
         if key not in seen:
             seen.add(key)
@@ -224,7 +255,6 @@ def build_discovery_packet():
 
 
 def discover_devices_on_interface(bind_ip: str, broadcast_ip: str,
-                                  recv_port: int = DISCOVERY_RECV_PORT,
                                   send_port: int = DISCOVERY_SEND_PORT,
                                   timeout_s: float = 3.0):
     devices = []
@@ -235,10 +265,10 @@ def discover_devices_on_interface(bind_ip: str, broadcast_ip: str,
 
     try:
         try:
-            sock.bind((bind_ip, recv_port))
+            sock.bind((bind_ip, 0))   # important: port random, nu 7800
         except Exception:
             try:
-                sock.bind(("", recv_port))
+                sock.bind(("", 0))
             except Exception:
                 pass
 
@@ -275,7 +305,7 @@ class HackersDefenseGame:
     def __init__(self, service: LightService, on_event):
         self._svc = service
         self._notify = on_event
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thr = None
 
@@ -303,10 +333,14 @@ class HackersDefenseGame:
         self.active_viruses = [set() for _ in range(MAX_WALLS)]
         self.locked_this_stage = [False] * MAX_WALLS
         self.wall_locked_now = [False] * MAX_WALLS
+        self.last_press_at = [0.0] * MAX_WALLS
 
         self.total_stars = 0
         self.max_total_stars = 0
         self.stage_star_history = []
+
+        self._last_eye_blink_phase = None
+        self._last_virus_blink_phase = None
 
     # ── Public API ────────────────────────────────────────────────────────────
     def start_game(self, num_walls):
@@ -336,10 +370,14 @@ class HackersDefenseGame:
         self.active_viruses = [set() for _ in range(MAX_WALLS)]
         self.locked_this_stage = [False] * MAX_WALLS
         self.wall_locked_now = [False] * MAX_WALLS
+        self.last_press_at = [0.0] * MAX_WALLS
 
         self.total_stars = 0
         self.max_total_stars = 0
         self.stage_star_history = []
+
+        self._last_eye_blink_phase = None
+        self._last_virus_blink_phase = None
 
         self._svc.all_off()
         self._stop.clear()
@@ -355,6 +393,8 @@ class HackersDefenseGame:
         self.state = S_SETUP
 
     def handle_button(self, ch, led, is_triggered, is_disconnected):
+        if is_disconnected:
+            return
         if not is_triggered:
             return
         if self.state != S_ACTIVE:
@@ -368,6 +408,11 @@ class HackersDefenseGame:
         if self.wall_locked_now[wall_idx]:
             return
 
+        now = time.perf_counter()
+        if now - self.last_press_at[wall_idx] < INPUT_DEBOUNCE_S:
+            return
+        self.last_press_at[wall_idx] = now
+
         with self._lock:
             if led in self.active_viruses[wall_idx]:
                 self.active_viruses[wall_idx].remove(led)
@@ -375,6 +420,8 @@ class HackersDefenseGame:
                 self.clears += 1
                 self.current_streak += 1
                 self.best_streak = max(self.best_streak, self.current_streak)
+
+                self._svc.set_led(ch, led, *GREEN)
 
                 self._notify("virus_cleared", {
                     "wall": ch,
@@ -390,11 +437,8 @@ class HackersDefenseGame:
                     "max_stars": self.max_total_stars,
                 })
 
-                self._svc.set_led(ch, led, *GREEN)
-
     # ── Stage helpers ─────────────────────────────────────────────────────────
     def _stage_duration_for_index(self, stage_index):
-        # 1->30, 2->40, 3->50 ...
         return BASE_STAGE_SECONDS + (stage_index - 1) * STAGE_STEP_SECONDS
 
     def _difficulty_for_stage(self, stage_index):
@@ -426,10 +470,14 @@ class HackersDefenseGame:
             self.active_viruses[w].clear()
             self.locked_this_stage[w] = False
             self.wall_locked_now[w] = False
+            self.last_press_at[w] = 0.0
 
         self.max_total_stars += self.num_walls
+        self._last_eye_blink_phase = None
+        self._last_virus_blink_phase = None
 
-        self._svc.all_off()
+        self._draw_world(now)
+
         self._notify("stage_started", {
             "stage": self.stage_index,
             "stage_duration": self.stage_duration,
@@ -444,8 +492,6 @@ class HackersDefenseGame:
         locked_count = sum(1 for x in self.locked_this_stage[:self.num_walls] if x)
         max_stage_stars = max(0, self.num_walls - locked_count)
 
-        # Simple rule:
-        # if any viruses remain on active unlocked walls, lose more stars.
         remaining = sum(len(self.active_viruses[w]) for w in range(self.num_walls))
         if remaining == 0:
             earned = max_stage_stars
@@ -470,7 +516,6 @@ class HackersDefenseGame:
             "max_total_stars": self.max_total_stars,
         }
         self.stage_star_history.append(stage_result)
-
         self._notify("stage_ended", stage_result)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -520,9 +565,9 @@ class HackersDefenseGame:
             if len(self.active_viruses[w]) > OVERLOAD_LIMIT:
                 self._trigger_wall_lock(w)
 
-    def _eye_color_for_wall(self, wall_idx, now):
+    def _eye_color_for_wall(self, wall_idx, now, blink_phase=None):
         if self.wall_locked_now[wall_idx]:
-            phase = int(now * 8) % 2
+            phase = blink_phase if blink_phase is not None else int(now * 8) % 2
             return RED if phase == 0 else OFF
 
         count = len(self.active_viruses[wall_idx])
@@ -534,24 +579,41 @@ class HackersDefenseGame:
             return YELLOW
         return ORANGE
 
-    def _draw_world(self, now):
+    def _draw_world(self, now, force=False):
+        eye_phase = None
+        virus_phase = None
+
+        if any(self.wall_locked_now[:self.num_walls]):
+            eye_phase = int(now * 8) % 2
+
+        if self.stage_left < 8:
+            virus_phase = int(now * 10) % 2
+
+        if not force:
+            if eye_phase == self._last_eye_blink_phase and virus_phase == self._last_virus_blink_phase:
+                # dacă nu s-a schimbat faza de blink, tot redesenăm când există modificări de gameplay
+                pass
+
+        self._last_eye_blink_phase = eye_phase
+        self._last_virus_blink_phase = virus_phase
+
         for w in range(self.num_walls):
             ch = w + 1
             locked = self.wall_locked_now[w]
 
-            self._svc.set_led(ch, EYE_LED, *self._eye_color_for_wall(w, now))
+            self._svc.set_led(ch, EYE_LED, *self._eye_color_for_wall(w, now, eye_phase))
 
             for led in BUTTONS:
                 if locked:
                     if led in self.active_viruses[w]:
-                        phase = int(now * 10) % 2
+                        phase = virus_phase if virus_phase is not None else int(now * 10) % 2
                         self._svc.set_led(ch, led, *(RED if phase == 0 else OFF))
                     else:
                         self._svc.set_led(ch, led, *OFF)
                 else:
                     if led in self.active_viruses[w]:
                         if self.stage_left < 8:
-                            phase = int(now * 10) % 2
+                            phase = virus_phase if virus_phase is not None else int(now * 10) % 2
                             self._svc.set_led(ch, led, *(BLUE if phase == 0 else WHITE))
                         else:
                             self._svc.set_led(ch, led, *BLUE)
@@ -615,6 +677,8 @@ class HackersDefenseGame:
             if self.total_game_left <= 0:
                 break
 
+            redraw_needed = False
+
             if self.stage_left <= 0:
                 self._finish_stage()
                 if self.total_game_left <= 0:
@@ -626,9 +690,18 @@ class HackersDefenseGame:
                 for _ in range(self.spawn_count):
                     self._spawn_one()
                 self.next_spawn_at = now + self.spawn_interval
+                redraw_needed = True
 
+            prev_locked = list(self.wall_locked_now[:self.num_walls])
             self._check_overloads()
-            self._draw_world(now)
+            if prev_locked != self.wall_locked_now[:self.num_walls]:
+                redraw_needed = True
+
+            if self.stage_left < 8 or any(self.wall_locked_now[:self.num_walls]):
+                redraw_needed = True
+
+            if redraw_needed:
+                self._draw_world(now)
 
             self._notify("tick", {
                 "score": self.score,
@@ -676,9 +749,8 @@ class HackersDefenseApp(tk.Tk):
         self._service = LightService()
         self._service.on_status = lambda m: self.after(0, lambda msg=m: self._set_status(msg))
 
-        ip = self._cfg.get("device_ip", "127.0.0.1")
-        if ip:
-            self._service.set_device(ip, self._cfg.get("udp_port", DISCOVERY_SEND_PORT))
+        ip = self._cfg.get("device_ip", "127.0.0.1") or "127.0.0.1"
+        self._service.set_device(ip, self._cfg.get("udp_port", DISCOVERY_SEND_PORT))
         self._service.set_recv_port(self._cfg.get("receiver_port", DISCOVERY_RECV_PORT))
         self._service.set_poll_rate(self._cfg.get("polling_rate_ms", 100))
         self._service.start_receiver()
@@ -688,7 +760,7 @@ class HackersDefenseApp(tk.Tk):
         self._service.on_button_state = self._game.handle_button
 
         self._v_walls = tk.IntVar(value=4)
-        self._v_device_ip = tk.StringVar(value=ip or "127.0.0.1")
+        self._v_device_ip = tk.StringVar(value=ip)
 
         self._frame_setup = tk.Frame(self, bg=BG_DARK)
         self._frame_game = tk.Frame(self, bg=BG_DARK)
@@ -776,8 +848,13 @@ class HackersDefenseApp(tk.Tk):
 
         win.update_idletasks()
         win.deiconify()
+        win.lift()
+        win.focus_force()
         win.wait_visibility()
-        win.grab_set()
+        try:
+            win.grab_set()
+        except tk.TclError:
+            pass
         self.wait_window(win)
 
         return result["value"]
@@ -788,7 +865,13 @@ class HackersDefenseApp(tk.Tk):
             self._set_status("No active network interfaces found.")
             return None
 
-        selected = self._choose_interface_dialog(interfaces)
+        preferred = None
+        for item in interfaces:
+            if item[1] == "169.254.182.44":
+                preferred = item
+                break
+
+        selected = preferred or self._choose_interface_dialog(interfaces)
         if not selected:
             self._set_status("Network selection canceled.")
             return None
@@ -800,7 +883,6 @@ class HackersDefenseApp(tk.Tk):
             devices = discover_devices_on_interface(
                 bind_ip=bind_ip,
                 broadcast_ip=bcast_ip,
-                recv_port=self._cfg.get("receiver_port", DISCOVERY_RECV_PORT),
                 send_port=self._cfg.get("udp_port", DISCOVERY_SEND_PORT),
                 timeout_s=3.0
             )
@@ -1067,7 +1149,7 @@ class HackersDefenseApp(tk.Tk):
 
     # ── Controls ──────────────────────────────────────────────────────────────
     def _apply_ip(self):
-        ip = self._v_device_ip.get().strip()
+        ip = self._v_device_ip.get().strip() or "127.0.0.1"
         self._service.set_device(ip, self._cfg.get("udp_port", DISCOVERY_SEND_PORT))
         self._cfg["device_ip"] = ip
         save_config(self._cfg)
