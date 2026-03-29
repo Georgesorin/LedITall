@@ -56,7 +56,7 @@ SHIPS_PER_PLAYER = 3
 
 ROUND_MIN_SECONDS = 10.0
 ROUND_MAX_SECONDS = 15.0
-TICK_RATE = 1.0 / 30.0
+TICK_RATE = 1.0 / 15.0
 INPUT_DEBOUNCE_S = 0.08
 
 PLAYER_WALLS = {
@@ -787,30 +787,12 @@ class BattleShipsGame:
 
                 if round_left < 3.0:
                     phase = int(now * 8) % 2
-
                     for p in range(self.num_players):
                         wall = self._wall_for_player(p)
                         if wall is None:
                             continue
-
                         col = self._life_eye_color(p) if phase == 0 else OFF
                         self._svc.set_led(wall, EYE_LED, *col)
-
-                    for p in range(self.num_players):
-                        if not self.alive[p]:
-                            continue
-
-                        tile = self.selected_tile[p]
-                        wall = self._wall_for_player(p)
-                        cycle = self.target_cycle[p]
-
-                        if tile is None or wall is None or not cycle:
-                            continue
-
-                        target = cycle[self.target_index[p]]
-                        self._svc.set_led(wall, tile, *(WHITE if target is None else PLAYER_COLORS_RGB[target]))
-                else:
-                    self._draw_battle_leds()
 
                 self._notify("tick", {
                     "round_index": self.round_index,
