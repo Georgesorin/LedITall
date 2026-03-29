@@ -77,7 +77,8 @@ class InterfaceManager:
     def __init__(self):
         pygame.init()
         # Set the size of the DJ window
-        self.screen_ctrl = pygame.display.set_mode((self.screen_width, self.screen_height), pygame.FULLSCREEN)
+        self.screen_width, self.screen_height = 500, 650
+        self.screen_ctrl = pygame.display.set_mode((self.screen_width, self.screen_height))
         pygame.display.set_caption("🎧 DJ DECK - Control Panel")
         
         # This manager handles all the buttons and text boxes for us
