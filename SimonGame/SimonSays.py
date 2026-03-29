@@ -5,6 +5,13 @@ import random
 import math
 import os
 import tkinter as tk
+import tempfile
+import wave
+import struct
+try:
+    import pygame
+except ImportError:
+    pygame = None
 
 # =========================================================
 #                      CONFIGURATION
@@ -18,6 +25,9 @@ def _load_config():
     }
 
 CONFIG = _load_config()
+SOUND_ENABLED = True
+SOUND_VOLUME = 0.45
+SOUND_SAMPLE_RATE = 44100
 
 UDP_SEND_IP = CONFIG.get("device_ip", "255.255.255.255")
 UDP_SEND_PORT = CONFIG.get("send_port", 4626)
@@ -87,6 +97,109 @@ FONT_5X7 = {
     "2": ["01110","10001","00001","00010","00100","01000","11111"],
     "3": ["11110","00001","00001","01110","00001","00001","11110"]
 }
+# =========================================================
+#                            Sound manager
+# =========================================================
+
+class SoundManager:
+    def __init__(self, enabled=True, volume=0.5):
+        self.enabled = enabled and (pygame is not None)
+        self.volume = volume
+        self.sounds = {}
+        self.temp_files = []
+
+        if not self.enabled:
+            print("[AUDIO] pygame nu este instalat.")
+            return
+
+        try:
+            pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
+            self._build_sounds()
+            print("[AUDIO] Sunet OK")
+        except Exception as e:
+            print(f"[AUDIO] ERROR: {e}")
+            self.enabled = False
+
+    def cleanup(self):
+        for f in self.temp_files:
+            try:
+                os.remove(f)
+            except:
+                pass
+        if self.enabled:
+            pygame.mixer.quit()
+
+    def _make_wave(self, freqs, duration=0.2, volume=0.5):
+        fd, path = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        self.temp_files.append(path)
+
+        sample_rate = 44100
+        n = int(sample_rate * duration)
+
+        with wave.open(path, "w") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+
+            frames = bytearray()
+            for i in range(n):
+                t = i / sample_rate
+                env = (1 - i / n)  # fade out
+
+                sample = 0
+                for f in freqs:
+                    sample += math.sin(2 * math.pi * f * t)
+
+                sample /= len(freqs)
+                sample = int(32767 * volume * env * sample)
+
+                frames += struct.pack("<h", sample)
+
+            wf.writeframes(frames)
+
+        return pygame.mixer.Sound(path)
+
+    def _build_sounds(self):
+        # 🎵 note muzicale (mai nice decât random freqs)
+        notes = [
+            261.63, 293.66, 329.63,
+            349.23, 392.00, 440.00,
+            493.88, 523.25, 587.33,
+            659.25, 698.46, 783.99
+        ]
+
+        # TILE sounds (clar, distinct)
+        for i, f in enumerate(notes):
+            snd = self._make_wave([f], 0.18, self.volume)
+            snd.set_volume(self.volume)
+            self.sounds[f"tile_{i}"] = snd
+
+        # SUCCESS (uplifting)
+        self.sounds["success"] = self._make_wave([523.25, 659.25, 783.99], 0.35)
+
+        # FAIL (low + rough)
+        self.sounds["wrong"] = self._make_wave([140, 110], 0.45)
+
+        # GAME OVER (deep)
+        self.sounds["game_over"] = self._make_wave([100, 80], 0.7)
+
+        # COUNTDOWN (increasing pitch)
+        self.sounds["count_3"] = self._make_wave([500], 0.2)
+        self.sounds["count_2"] = self._make_wave([700], 0.2)
+        self.sounds["count_1"] = self._make_wave([900], 0.25)
+
+        # INTRO (arcade vibe)
+        self.sounds["intro"] = self._make_wave([440, 660], 0.4)
+
+    def play(self, name):
+        if not self.enabled:
+            return
+        try:
+            if name in self.sounds:
+                self.sounds[name].play(maxtime=500)
+        except:
+            pass
 
 # =========================================================
 #                            HUD
@@ -229,6 +342,7 @@ class SimonGame:
         self.board = [[BLACK for _ in range(BOARD_WIDTH)] for _ in range(BOARD_HEIGHT)]
         self.running = True
         self.lock = threading.RLock()
+        self.sound = SoundManager(enabled=SOUND_ENABLED, volume=SOUND_VOLUME)
 
         # stări butoane hardware
         self.button_states = [False] * 512
@@ -333,11 +447,15 @@ class SimonGame:
     def draw_all_tiles(self, dim=False):
         self.redraw_game_scene(dim=dim)
 
-    def flash_tile(self, tile_id, duration=0.25):
+    def flash_tile(self, tile_id, duration=0.25, play_sound=True):
         self.draw_sequence_background()
 
         tile = self.tiles[tile_id]
         self.draw_tile(tile, tile["color"])
+
+        if play_sound:
+            self.sound.play(f"tile_{tile_id}")
+
         time.sleep(duration)
 
         self.draw_sequence_background()
@@ -566,6 +684,7 @@ class SimonGame:
 
     def run_intro(self):
         self.state = "intro"
+        self.sound.play("intro")
         text = "  LedITall  "
 
         # -----------------------------
@@ -644,6 +763,7 @@ class SimonGame:
         ]
 
         start_time = time.time()
+        last_announced = None
         total = sum(duration for _, duration in items)
 
         bitmap_cache = {}
@@ -663,6 +783,9 @@ class SimonGame:
                 break
 
             current_text = "1"
+            if current_text != last_announced:
+                self.sound.play(f"count_{current_text}")
+                last_announced = current_text
             for text, limit in elapsed_limits:
                 if elapsed < limit:
                     current_text = text
@@ -751,6 +874,7 @@ class SimonGame:
         self.state = "success"
         self.round_deadline = None
         self.last_clock_visible_segments = -1
+        self.sound.play("success")
 
         self.flash_all(color=GREEN, times=2, on_time=0.18, off_time=0.12)
 
@@ -763,6 +887,7 @@ class SimonGame:
 
     def end_game(self):
         self.state = "game_over"
+        self.sound.play("game_over")
 
         end_time = time.time() + 2.5
         while time.time() < end_time and self.running:
@@ -784,6 +909,8 @@ class SimonGame:
         self.state = "repeat"
         self.round_deadline = None
         self.last_clock_visible_segments = -1
+        if play_sound:
+            self.sound.play("wrong")
 
         self.flash_all(color=RED, times=2, on_time=0.2, off_time=0.12)
         time.sleep(0.3)
@@ -823,7 +950,7 @@ class SimonGame:
         # timer rundă + update ceas DOAR în input
         if self.state == "input":
             if self.round_deadline is not None and time.time() >= self.round_deadline:
-                self.repeat_sequence_async(play_sound=False)
+                self.repeat_sequence_async(play_sound=True)
                 return
 
             segs = self.get_clock_segments_for_round()
@@ -860,7 +987,9 @@ class SimonGame:
         expected = self.sequence[self.player_index]
 
         if tile_id == expected:
+            self.sound.play(f"tile_{tile_id}")
             self.player_index += 1
+
             if self.player_index >= len(self.sequence):
                 gained = self.calculate_score_gain()
                 self.score += gained
@@ -1167,10 +1296,49 @@ if __name__ == "__main__":
     net = NetworkManager(game)
     net.start_bg()
 
+    helper_display = HelperDisplay(game)
+
+    # Pornim intro-ul dupa ce porneste reteaua
+    game.play_intro_then_start_async()
+
+    gt = threading.Thread(target=game_thread_func, args=(game,), daemon=True)
+    gt.start()
+
+    print("Simon Game pornit.")
+    print("Intro activ: LedITall")
+    print("Urmareste secventa, apoi apasa patratele in ordinea afisata.")
+    print("Inchide fereastra helper sau apasa Ctrl+C pentru iesire.")
+
+    try:
+        helper_display.run()   # tkinter trebuie in main thread
+    except KeyboardInterrupt:
+        pass
+    finally:
+        game.running = False
+        net.running = False
+        try:
+            helper_display.close()
+        except:
+            pass
+        try:
+            game.sound.cleanup()
+        except:
+            pass
+        print("Exiting...")
+    game = SimonGame()
+    net = NetworkManager(game)
+    net.start_bg()
+
     # pornim UI helper intr-un thread separat
     helper_display = HelperDisplay(game)
-    ui_thread = threading.Thread(target=helper_display.run, daemon=True)
-    ui_thread.start()
+    try:
+        while game.running:
+            cmd = input("> ").strip().lower()
+            if cmd in ("quit", "exit"):
+                game.running = False
+                break
+    except KeyboardInterrupt:
+        game.running = False
 
     # Pornim intro-ul DUPĂ ce pornește rețeaua
     game.play_intro_then_start_async()
@@ -1194,4 +1362,5 @@ if __name__ == "__main__":
 
     net.running = False
     helper_display.close()
+    game.sound.cleanup()
     print("Exiting...")
