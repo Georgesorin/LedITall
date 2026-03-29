@@ -1,679 +1,512 @@
+import tkinter as tk
+from tkinter import scrolledtext
 import socket
-import time
 import threading
-import random
+import time
+import struct
+import psutil
+import json
 import os
-import math
+from datetime import datetime
+from tkinter import ttk
 
-try:
-    import pygame
-    PYGAME_AVAILABLE = True
-except ImportError:
-    PYGAME_AVAILABLE = False
-    print("Pygame lipseste. Instaleaza cu: pip install pygame")
+# --- Configuration ---
+_CFG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "matrix_sim_config.json")
 
-# --- Configurare Retea Matrix Room ---
-UDP_SEND_IP = "255.255.255.255"
-UDP_SEND_PORT = 6967
-UDP_LISTEN_PORT = 5555
+def _load_config():
+    defaults = {
+        "send_port": 7800,
+        "recv_port": 4626,
+        "device_ip": "255.255.255.255",
+        "last_used_ports": []
+    }
+    try:
+        if os.path.exists(_CFG_FILE):
+            with open(_CFG_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+                defaults.update(data)
+        return defaults
+    except:
+        return defaults
 
-NUM_CHANNELS = 8
-LEDS_PER_CHANNEL = 64
-FRAME_DATA_LENGTH = NUM_CHANNELS * LEDS_PER_CHANNEL * 3
+def _save_config(config):
+    try:
+        with open(_CFG_FILE, 'w', encoding="utf-8") as f:
+            json.dump(config, f, indent=4)
+    except:
+        pass
+
+CONFIG = _load_config()
+VIRTUAL_IP = CONFIG.get("virtual_iface_ip", "")
 
 BOARD_WIDTH = 16
-BOARD_HEIGHT = 32 # 512 placi fizice
+BOARD_HEIGHT = 32
+NUM_CHANNELS = 8
+LEDS_PER_CHANNEL = 64
+PIXEL_TIMEOUT = 3.0 # Seconds
 
-# --- Culori Joc ---
-BLACK = (0, 0, 0)
-WHITE = (255, 255, 255)
-RED = (255, 0, 0)
-GREEN = (0, 255, 0)
-BLUE = (0, 0, 255)
-YELLOW = (255, 255, 0)
-CYAN = (0, 255, 255)
-MAGENTA = (255, 0, 255)
-ORANGE = (255, 165, 0)
-PURPLE = (128, 0, 128)
-PINK = (255, 133, 158) 
+# --- Simulator Class ---
+class MatrixSimulator:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Matrix Simulator (16x32)")
+        self.root.configure(bg="#1a1a1a")
 
-COLORS_LIST = [PINK, GREEN, BLUE, YELLOW, CYAN, MAGENTA, ORANGE, PURPLE]
-
-# --- Font pentru Numaratoare (5x7 scalat x2) ---
-DIGITS = {
-    3: [" ### ", "#   #", "    #", "  ## ", "    #", "#   #", " ### "],
-    2: [" ### ", "#   #", "    #", "  ## ", " #   ", "#    ", "#####"],
-    1: ["  #  ", " ##  ", "# #  ", "  #  ", "  #  ", "  #  ", "#####"]
-}
-
-# --- Font compact pentru LedITall pe orizontala ---
-FONT_LEDITALL = {
-    'L': ["#  ", "#  ", "#  ", "#  ", "###"],
-    'e': [" ##", "# #", "###", "#  ", "###"],
-    'd': ["  #", "  #", "###", "# #", "###"],
-    'I': ["###", " # ", " # ", " # ", "###"],
-    'T': ["###", " # ", " # ", " # ", " # "],
-    'a': [" ##", "  #", "###", "# #", "###"],
-    'l': ["#", "#", "#", "#", "#"]
-}
-TEXT_BRAND = "LedITall"
-
-# --- Audio Manager ---
-class SoundManager:
-    def __init__(self):
-        self.enabled = PYGAME_AVAILABLE
+        self.cell_size = 20
+        self.fullscreen = False
         
-        self.base_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        if self.enabled:
-            pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
-            
-            self._generate_sounds()
-            
-            self.snd_tick = pygame.mixer.Sound(os.path.join(self.base_dir, "tick.wav"))
-            self.snd_error = pygame.mixer.Sound(os.path.join(self.base_dir, "error.wav"))
-            self.snd_win = pygame.mixer.Sound(os.path.join(self.base_dir, "win.wav"))
-            self.snd_start = pygame.mixer.Sound(os.path.join(self.base_dir, "start.wav"))
-            
-            try:
-                bgm_path = os.path.join(self.base_dir, "bgm.wav")
-                pygame.mixer.music.load(bgm_path)
-                pygame.mixer.music.set_volume(0.3) 
-            except:
-                print("Eroare la incarcarea bgm.wav")
-
-    def _generate_sounds(self):
-        import wave, struct
-        
-        def make_wav(name, freq, duration, volume=0.5):
-            filepath = os.path.join(self.base_dir, name) 
-            if os.path.exists(filepath): return
-            sample_rate = 44100
-            with wave.open(filepath, 'w') as f:
-                f.setnchannels(1)
-                f.setsampwidth(2)
-                f.setframerate(sample_rate)
-                for i in range(int(sample_rate * duration)):
-                    value = int(volume * 32767.0 * math.sin(2.0 * math.pi * freq * i / sample_rate))
-                    f.writeframesraw(struct.pack('<h', value))
-                    
-        def make_bgm(name):
-            filepath = os.path.join(self.base_dir, name) 
-            if os.path.exists(filepath): return
-            sample_rate = 44100
-            with wave.open(filepath, 'w') as f:
-                f.setnchannels(1)
-                f.setsampwidth(2)
-                f.setframerate(sample_rate)
-                notes = [220, 0, 277, 0, 330, 0, 277, 0] 
-                for freq in notes:
-                    for i in range(int(sample_rate * 0.125)): 
-                        if freq == 0: value = 0
-                        else: value = int(0.2 * 32767.0 * math.sin(2.0 * math.pi * freq * i / sample_rate))
-                        f.writeframesraw(struct.pack('<h', value))
-        
-        make_wav("tick.wav", 1000, 0.05)   
-        make_wav("error.wav", 150, 0.8)    
-        make_wav("win.wav", 600, 0.4)      
-        make_wav("start.wav", 400, 0.8)    
-        make_bgm("bgm.wav")
-
-    def play(self, name):
-        if not self.enabled: return
-        try:
-            if name == 'tick': self.snd_tick.play()
-            elif name == 'error': self.snd_error.play()
-            elif name == 'win': self.snd_win.play()
-            elif name == 'start': self.snd_start.play()
-        except: pass
-
-    def play_bgm(self):
-        if not self.enabled: return
-        try:
-            pygame.mixer.music.play(-1) 
-        except: pass
-
-    def stop_bgm(self):
-        if not self.enabled: return
-        try:
-            pygame.mixer.music.stop()
-        except: pass
-
-# --- Helper Logic ---
-def blocks_touch(b1, b2):
-    x1, y1, w1, h1 = b1
-    x2, y2, w2, h2 = b2
-    return not (x1 + w1 < x2 or x2 + w2 < x1 or y1 + h1 < y2 or y2 + h2 < y1)
-
-
-# --- Logica Jocului Fizic ---
-class PhysicalBlockParty:
-    def __init__(self):
-        self.board = [[BLACK for _ in range(BOARD_WIDTH)] for _ in range(BOARD_HEIGHT)]
-        self.blob_board = [[-1 for _ in range(BOARD_WIDTH)] for _ in range(BOARD_HEIGHT)] 
-        self.running = True
-        self.lock = threading.RLock()
-        self.audio = SoundManager()
-        
-        self.button_states = [False] * 512
-        
-        self.state = 'WAITING_TO_START' 
-        self.round = 1
-        self.score = 0
-        self.target_color = RED
-        
-        self.global_timer = 0.0      
-        self.round_timer = 0.0
-        self.sequence_timer = 0.0
-        self.last_tick_time = time.time()
-        
-        self.last_second_beep = 0
-        self.last_seq_sec = 0
-        self.last_printed_minute = -1
-        
-        self.frozen_board = []
-        self.error_blobs = []
-        self.correct_blobs = [] # Noua variabila pentru a pastra blocurile corecte aprinse
-
-    def initiate_start_sequence(self):
-        with self.lock:
-            self.state = 'BRANDING_SEQUENCE'
-            self.sequence_timer = 3.0 
-            self.last_tick_time = time.time()
-            self.last_seq_sec = 6
-            self.audio.play_bgm() 
-            print("\n" + "="*40)
-            print("✨ PREGATIRE JOC... BRANDING INIT ✨")
-            print("="*40)
-
-    def start_game_logic(self):
-        self.round = 1
-        self.score = 0
-        self.global_timer = 10 * 60  
-        self.last_printed_minute = 10
-        
-        print("\n" + "🚀"*10)
-        print(" JOCUL A INCEPUT! TIMP: 10 MINUTE")
-        print("🚀"*10)
-        self.start_round()
-
-    def start_round(self):
-        with self.lock:
-            self.state = 'SHOW_TARGET'
-            self.target_color = random.choice(COLORS_LIST)
-            self.audio.play('start') 
-            
-            for y in range(BOARD_HEIGHT):
-                for x in range(BOARD_WIDTH):
-                    self.board[y][x] = self.target_color
-            
-            self.round_timer = 3.0 
-            self.last_tick_time = time.time()
-            print(f"\n--- RUNDA {self.round} | SCOR ACTUAL: {self.score} ---")
-            print("👁️ Memorati culoarea!")
-
-    def generate_blocks(self):
-        with self.lock:
-            MACRO_W = 8
-            MACRO_H = 16
-            blob_grid = [[-1 for _ in range(MACRO_W)] for _ in range(MACRO_H)]
-            blobs = []
-
-            if self.round <= 4:
-                min_s, max_s = 6, 10
-                target_count = random.randint(4, 6)
-            elif self.round <= 8:
-                min_s, max_s = 4, 6
-                target_count = random.randint(4, 6)
-            else:
-                min_s, max_s = 2, 3
-                target_count = random.randint(3, 5)
-
-            for y in range(MACRO_H):
-                for x in range(MACRO_W):
-                    if blob_grid[y][x] == -1: 
-                        target_size = random.randint(min_s, max_s)
-                        blob_id = len(blobs)
-                        current_blob = []
-                        
-                        q = [(y, x)]
-                        while q and len(current_blob) < target_size:
-                            idx = random.randint(0, len(q)-1)
-                            cy, cx = q.pop(idx)
-                            
-                            if blob_grid[cy][cx] == -1:
-                                blob_grid[cy][cx] = blob_id
-                                current_blob.append((cy, cx))
-                                
-                                for dy, dx in [(-1,0), (1,0), (0,-1), (0,1)]:
-                                    ny, nx = cy+dy, cx+dx
-                                    if 0 <= ny < MACRO_H and 0 <= nx < MACRO_W:
-                                        if blob_grid[ny][nx] == -1:
-                                            q.append((ny, nx))
-                                            
-                        blobs.append(current_blob)
-
-            adj = {i: set() for i in range(len(blobs))}
-            for y in range(MACRO_H):
-                for x in range(MACRO_W):
-                    b1 = blob_grid[y][x]
-                    if x + 1 < MACRO_W:
-                        b2 = blob_grid[y][x+1]
-                        if b1 != b2:
-                            adj[b1].add(b2)
-                            adj[b2].add(b1)
-                    if y + 1 < MACRO_H:
-                        b2 = blob_grid[y+1][x]
-                        if b1 != b2:
-                            adj[b1].add(b2)
-                            adj[b2].add(b1)
-
-            wrong_colors = [c for c in COLORS_LIST if c != self.target_color]
-            blob_colors = {}
-            
-            target_blob_ids = []
-            candidates = list(range(len(blobs)))
-            random.shuffle(candidates)
-            for c in candidates:
-                if not any(n in target_blob_ids for n in adj[c]):
-                    target_blob_ids.append(c)
-                if len(target_blob_ids) == target_count:
-                    break
-                    
-            for tid in target_blob_ids:
-                blob_colors[tid] = self.target_color
-                
-            for i in range(len(blobs)):
-                if i in blob_colors:
-                    continue
-                neighbor_colors = {blob_colors[n] for n in adj[i] if n in blob_colors}
-                avail = [c for c in wrong_colors if c not in neighbor_colors]
-                if not avail:
-                    avail = wrong_colors 
-                blob_colors[i] = random.choice(avail)
-
-            for y in range(MACRO_H):
-                for x in range(MACRO_W):
-                    color = blob_colors[blob_grid[y][x]]
-                    bid = blob_grid[y][x]
-                    
-                    self.board[y*2][x*2] = color
-                    self.blob_board[y*2][x*2] = bid
-                    
-                    self.board[y*2][x*2+1] = color
-                    self.blob_board[y*2][x*2+1] = bid
-                    
-                    self.board[y*2+1][x*2] = color
-                    self.blob_board[y*2+1][x*2] = bid
-                    
-                    self.board[y*2+1][x*2+1] = color
-                    self.blob_board[y*2+1][x*2+1] = bid
-
-    def evaluate_floor(self):
-        self.audio.stop_bgm()
-        wrong_tiles_pressed = 0
-        correct_tiles_pressed = 0
-        
-        wrong_blobs_stepped = set() 
-        correct_blobs_stepped = set() # Salveaza ID-urile formelor bune pe care au stat jucatorii
-        
-        with self.lock:
-            for i in range(512):
-                if self.button_states[i]: 
-                    channel = i // 64
-                    idx_in_channel = i % 64
-                    r_in_c = idx_in_channel // 16
-                    c_raw = idx_in_channel % 16
-                    x = c_raw if r_in_c % 2 == 0 else 15 - c_raw
-                    y = (channel * 4) + r_in_c
-                    
-                    stepped_color = self.board[y][x]
-                    
-                    if stepped_color != self.target_color:
-                        wrong_tiles_pressed += 1
-                        wrong_blobs_stepped.add(self.blob_board[y][x])
-                    else:
-                        correct_tiles_pressed += 1
-                        correct_blobs_stepped.add(self.blob_board[y][x])
-
-            if wrong_tiles_pressed > 0:
-                penalty = wrong_tiles_pressed * 5
-                self.score -= penalty
-                print(f"❌ EROARE! Ati calcat pe {wrong_tiles_pressed} placi gresite.")
-                print(f"📉 Penalizare: -{penalty} puncte. Scor actual: {self.score}")
-                self.audio.play('error')
-                
-                self.frozen_board = [row[:] for row in self.board]
-                self.error_blobs = list(wrong_blobs_stepped)
-                self.correct_blobs = list(correct_blobs_stepped) # Salvam si blocurile bune
-                self.state = 'ROUND_OVER_ERROR'
-            
-            elif correct_tiles_pressed > 0:
-                self.score += 10
-                print(f"✅ PERFECT! Toti sunteti in siguranta.")
-                print(f"📈 Bonus: +10 puncte. Scor actual: {self.score}")
-                self.audio.play('win')
-                self.round += 1
-                
-                for y in range(BOARD_HEIGHT):
-                    for x in range(BOARD_WIDTH):
-                        # Daca a fost corect pe toata linia, ramane doar culoarea lor, restul negru
-                        if self.board[y][x] != self.target_color:
-                            self.board[y][x] = BLACK
-                self.state = 'ROUND_OVER'
-            else:
-                print("⚠️ Nimeni nu a calcat pe nicio placa! 0 puncte.")
-                self.audio.play('error')
-                for y in range(BOARD_HEIGHT):
-                    for x in range(BOARD_WIDTH):
-                        self.board[y][x] = BLACK
-                self.state = 'ROUND_OVER'
-
-            if self.global_timer > 3:
-                threading.Timer(3.0, self.start_round).start()
-
-    def finish_game(self):
-        with self.lock:
-            self.state = 'GAME_FINISHED'
-            self.audio.stop_bgm() 
-            
-            print("\n" + "🌟"*20)
-            print("   TIMPUL A EXPIRAT! JOCUL S-A TERMINAT")
-            print(f"   SCORUL VOSTRU FINAL ESTE: {self.score} PUNCTE")
-            print("🌟"*20 + "\n")
-            
-            self.audio.play('win')
-            for y in range(BOARD_HEIGHT):
-                for x in range(BOARD_WIDTH):
-                    self.board[y][x] = WHITE
-
-    def draw_branding(self, t):
+        # Grid Data: (x, y) -> Color (R, G, B)
+        self.grid_data = {}
+        self.pixel_timestamps = {}
         for y in range(BOARD_HEIGHT):
             for x in range(BOARD_WIDTH):
-                self.board[y][x] = (10, 0, 20) 
+                self.grid_data[(x, y)] = (0, 0, 0)
+                self.pixel_timestamps[(x, y)] = 0
 
-        curr_y = 2 
-        for char in TEXT_BRAND:
-            if char in FONT_LEDITALL:
-                glyph = FONT_LEDITALL[char]
-                char_width = len(glyph[0])
-                for r_idx, row in enumerate(glyph):
-                    for c_idx, pixel in enumerate(row):
-                        if pixel == '#':
-                            board_y = 31 - (curr_y + c_idx)
-                            board_x = 10 - r_idx 
-                            
-                            ratio = board_y / 31.0
-                            if ratio < 0.5:
-                                p = ratio * 2.0
-                                r_base = int(255 + p * (138 - 255))
-                                g_base = int(20 + p * (43 - 20))
-                                b_base = int(147 + p * (226 - 147))
-                            else:
-                                p = (ratio - 0.5) * 2.0
-                                r_base = int(138 + p * (0 - 138))
-                                g_base = int(43 + p * (191 - 43))
-                                b_base = int(226 + p * (255 - 226))
-                                
-                            wave = (math.sin(board_x * 0.5 + board_y * 0.5 - t * 8.0) + 1) / 2
-                            intensity = 0.3 + (wave * 0.7) 
-                            
-                            r = int(r_base * intensity)
-                            g = int(g_base * intensity)
-                            b = int(b_base * intensity)
-                            if 0 <= board_y < BOARD_HEIGHT and 0 <= board_x < BOARD_WIDTH:
-                                self.board[board_y][board_x] = (r, g, b)
-                curr_y += char_width + 1
-
-    def tick(self):
-        if self.state == 'WAITING_TO_START' or self.state == 'GAME_FINISHED':
-            return
-
-        now = time.time()
-        dt = now - self.last_tick_time
-        self.last_tick_time = now
-
-        if self.state == 'BRANDING_SEQUENCE':
-            self.sequence_timer -= dt
-            with self.lock:
-                self.draw_branding(time.time())
-            if self.sequence_timer <= 0:
-                self.state = 'START_SEQUENCE'
-                self.sequence_timer = 6.0 
-            return
-
-        if self.state == 'START_SEQUENCE':
-            self.sequence_timer -= dt
-            
-            if self.sequence_timer > 3.0:
-                with self.lock:
-                    t = time.time()
-                    for y in range(BOARD_HEIGHT):
-                        ratio = y / 31.0
-                        if ratio < 0.5:
-                            p = ratio * 2.0
-                            r_base = int(255 + p * (138 - 255))
-                            g_base = int(20 + p * (43 - 20))
-                            b_base = int(147 + p * (226 - 147))
-                        else:
-                            p = (ratio - 0.5) * 2.0
-                            r_base = int(138 + p * (0 - 138))
-                            g_base = int(43 + p * (191 - 43))
-                            b_base = int(226 + p * (255 - 226))
-                            
-                        for x in range(BOARD_WIDTH):
-                            wave = (math.sin(x * 0.5 + y * 0.5 - t * 8.0) + 1) / 2
-                            intensity = 0.1 + (wave * 0.9)
-                            
-                            r = int(r_base * intensity)
-                            g = int(g_base * intensity)
-                            b = int(b_base * intensity)
-                            
-                            self.board[y][x] = (r, g, b)
-            else:
-                current_digit = int(math.ceil(self.sequence_timer))
-                
-                if current_digit != self.last_seq_sec and current_digit > 0:
-                    if current_digit == 3:          
-                        self.audio.stop_bgm()       
-                    self.audio.play('tick')
-                    self.last_seq_sec = current_digit
-                    
-                    with self.lock:
-                        for y in range(BOARD_HEIGHT):
-                            for x in range(BOARD_WIDTH):
-                                self.board[y][x] = BLACK
-                                
-                        if current_digit in DIGITS:
-                            template = DIGITS[current_digit]
-                            start_x, start_y = 3, 9
-                            
-                            for row_idx, row_str in enumerate(template):
-                                for col_idx, char in enumerate(row_str):
-                                    if char == '#':
-                                        px = start_x + col_idx * 2
-                                        py = start_y + row_idx * 2
-                                        self.board[py][px] = WHITE
-                                        self.board[py][px+1] = WHITE
-                                        self.board[py+1][px] = WHITE
-                                        self.board[py+1][px+1] = WHITE
-                                        
-            if self.sequence_timer <= 0:
-                self.start_game_logic()
-            return
-            
-        self.global_timer -= dt
+        # State
+        self.running = True
+        self.packet_count = 0
+        self.frame_buffer = bytearray(NUM_CHANNELS * LEDS_PER_CHANNEL * 3)
+        self.bind_ip = "0.0.0.0"
         
-        current_minute = int(self.global_timer // 60)
-        if current_minute != self.last_printed_minute and current_minute >= 0:
-            print(f"⏳ Timp global ramas: {current_minute} minute")
-            self.last_printed_minute = current_minute
+        # Ports
+        self.listen_port = CONFIG.get("recv_port", 4626)
+        self.send_port = CONFIG.get("send_port", 7800)
 
-        if self.global_timer <= 0:
-            self.finish_game()
-            return
+        # Button states for input
+        self.pressed_leds = set()
+        self.current_pressed_pos = None
 
-        if self.state == 'SHOW_TARGET':
-            self.round_timer -= dt
+        # UI Setup
+        self.create_widgets()
+        
+        # Network Setup
+        self.setup_network()
+        
+        # Threads
+        self.net_thread = threading.Thread(target=self.network_loop, daemon=True)
+        self.net_thread.start()
+        
+        self.timeout_thread = threading.Thread(target=self.timeout_loop, daemon=True)
+        self.timeout_thread.start()
+        
+        # UI Update Loop for stats
+        self.update_stats()
 
-            if self.round_timer <= 0:
-                self.generate_blocks()
-                self.state = 'PLAYING'
-                self.round_timer = max(3.0, 8.5 - (self.round * 0.4))
-                self.last_second_beep = int(self.round_timer)
-                
-                self.audio.play_bgm()
-                
-                print("🏃 FUGEEETI catre culoare!")
+    def log(self, msg):
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        self.log_area.configure(state='normal')
+        self.log_area.insert(tk.END, f"[{timestamp}] {msg}\n")
+        self.log_area.see(tk.END)
+        self.log_area.configure(state='disabled')
 
-        elif self.state == 'PLAYING':
-            self.round_timer -= dt
-            current_sec = int(self.round_timer)
+    def create_widgets(self):
+        # Top Control bar
+        control_frame = tk.Frame(self.root, bg="#2a2a2a")
+        control_frame.pack(side=tk.TOP, fill=tk.X)
+        
+        # RX Indicator
+        self.lbl_rx = tk.Label(control_frame, text="● RX", bg="#2a2a2a", fg="#555", font=("Consolas", 10, "bold"))
+        self.lbl_rx.pack(side=tk.LEFT, padx=5, pady=6)
+
+        self.lbl_stats = tk.Label(control_frame, text="Packets: 0 | Ready", bg="#2a2a2a", fg="#00FF00", font=("Consolas", 9, "bold"))
+        self.lbl_stats.pack(side=tk.LEFT, padx=10, pady=6)
+        
+        tk.Label(control_frame, text="Net:", bg="#2a2a2a", fg="#888", font=("Consolas", 8)).pack(side=tk.LEFT, padx=(10, 2))
+        self.iface_var = tk.StringVar(value=self.bind_ip)
+        self.iface_combo = ttk.Combobox(control_frame, textvariable=self.iface_var, width=15, state="readonly")
+        self.iface_combo.pack(side=tk.LEFT, padx=5)
+        self._update_iface_list()
+        self.iface_combo.bind("<<ComboboxSelected>>", self._on_interface_change)
+
+        # Port Settings
+        tk.Label(control_frame, text="Port IN:", bg="#2a2a2a", fg="#888", font=("Consolas", 8)).pack(side=tk.LEFT, padx=(10, 2))
+        self.port_in_var = tk.StringVar(value=str(self.listen_port))
+        self.ent_port_in = tk.Entry(control_frame, textvariable=self.port_in_var, width=6, bg="#111", fg="#0f0", font=("Consolas", 9))
+        self.ent_port_in.pack(side=tk.LEFT, padx=2)
+        self.ent_port_in.bind("<FocusOut>", self.apply_ports)
+        self.ent_port_in.bind("<Return>", self.apply_ports)
+
+        tk.Button(control_frame, text="🎲", command=self.randomize_port, bg="#444", fg="white", font=("Consolas", 8), relief="flat").pack(side=tk.LEFT, padx=2)
+
+        tk.Label(control_frame, text="Port OUT:", bg="#2a2a2a", fg="#888", font=("Consolas", 8)).pack(side=tk.LEFT, padx=(10, 2))
+        self.port_out_var = tk.StringVar(value=str(self.send_port))
+        self.ent_port_out = tk.Entry(control_frame, textvariable=self.port_out_var, width=6, bg="#111", fg="#0f0", font=("Consolas", 9))
+        self.ent_port_out.pack(side=tk.LEFT, padx=2)
+        self.ent_port_out.bind("<FocusOut>", self.apply_ports)
+        self.ent_port_out.bind("<Return>", self.apply_ports)
+
+        tk.Label(control_frame, text="F11: Fullscreen | ESC: Exit", bg="#2a2a2a", fg="#aaa", font=("Consolas", 8)).pack(side=tk.RIGHT, padx=10)
+
+        # Main horizontal split
+        main_pane = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, bg="#1a1a1a", sashwidth=4, sashpad=0)
+        main_pane.pack(fill=tk.BOTH, expand=True)
+
+        # Left: Canvas
+        self.canvas = tk.Canvas(main_pane, bg="black", highlightthickness=0)
+        main_pane.add(self.canvas, stretch="always")
+
+        # Right: Log Area
+        log_frame = tk.Frame(main_pane, bg="#222", width=300)
+        main_pane.add(log_frame, stretch="never")
+        
+        tk.Label(log_frame, text="NETWORK LOGS", bg="#444", fg="white", font=("Consolas", 9, "bold")).pack(fill=tk.X)
+        self.log_area = scrolledtext.ScrolledText(log_frame, bg="#111", fg="#00FF00", font=("Consolas", 8), state='disabled', borderwidth=0)
+        self.log_area.pack(fill=tk.BOTH, expand=True)
+
+        # Bindings
+        self.root.bind("<f>", self.toggle_fullscreen)
+        self.root.bind("<F11>", self.toggle_fullscreen)
+        self.root.bind("<Escape>", self.exit_fullscreen)
+        self.canvas.bind("<ButtonPress-1>", self.on_press)
+        self.canvas.bind("<ButtonRelease-1>", self.on_release)
+        self.canvas.bind("<B1-Motion>", self.on_motion)
+        self.root.bind("<Configure>", self.on_resize)
+
+    def _update_iface_list(self):
+        ips = ["0.0.0.0"]
+        try:
+            for iface, addrs in psutil.net_if_addrs().items():
+                for addr in addrs:
+                    if addr.family == socket.AF_INET:
+                        ips.append(addr.address)
+        except: pass
+        self.iface_combo['values'] = ips
+
+    def _on_interface_change(self, event=None):
+        new_ip = self.iface_var.get()
+        if new_ip == self.bind_ip: return
+        self.log(f"Switching interface to {new_ip}...")
+        self.bind_ip = new_ip
+        self.setup_network()
+
+    def randomize_port(self):
+        import random
+        new_in = random.randint(1024, 65535)
+        new_out = random.randint(1024, 65535)
+        self.port_in_var.set(str(new_in))
+        self.port_out_var.set(str(new_out))
+        self.apply_ports()
+
+    def apply_ports(self, event=None):
+        try:
+            p_in = int(self.port_in_var.get())
+            p_out = int(self.port_out_var.get())
+            if p_in < 1024 or p_in > 65535 or p_out < 1024 or p_out > 65535:
+                raise ValueError
+            if p_in == self.listen_port and p_out == self.send_port:
+                return
             
-            if current_sec != self.last_second_beep and current_sec > 0 and current_sec <= 3:
-                self.audio.play('tick')
-                
-            if current_sec != self.last_second_beep:
-                self.last_second_beep = current_sec
+            self.listen_port = p_in
+            self.send_port = p_out
+            self.log(f"Ports updated -> IN:{self.listen_port}, OUT:{self.send_port}")
+            
+            # Save to config
+            CONFIG["recv_port"] = self.listen_port
+            CONFIG["send_port"] = self.send_port
+            _save_config(CONFIG)
+            
+            self.setup_network()
+        except:
+            self.port_in_var.set(str(self.listen_port))
+            self.port_out_var.set(str(self.send_port))
 
-            if self.round_timer <= 0:
-                self.evaluate_floor()
-                
-        elif self.state == 'ROUND_OVER_ERROR':
-            with self.lock:
-                t = time.time()
-                is_red = int(t * 6) % 2 == 0 
-                
-                for y in range(BOARD_HEIGHT):
-                    for x in range(BOARD_WIDTH):
-                        current_blob_id = self.blob_board[y][x]
-                        
-                        # Daca e un bloc GRESIT care a fost calcat -> Licare Rosu/Negru
-                        if current_blob_id in self.error_blobs:
-                            self.board[y][x] = RED if is_red else BLACK
-                        
-                        # Daca e un bloc CORECT care a fost calcat de altcineva -> Ramane aprins
-                        elif current_blob_id in self.correct_blobs:
-                            self.board[y][x] = self.target_color
-                            
-                        # Restul camerei se stinge
-                        else:
-                            self.board[y][x] = BLACK
+    def setup_network(self):
+        # Close old sockets if they exist
+        if hasattr(self, 'sock_listen'):
+            try: self.sock_listen.close()
+            except: pass
+        if hasattr(self, 'sock_send'):
+            try: self.sock_send.close()
+            except: pass
 
-    def render(self):
-        buffer = bytearray(FRAME_DATA_LENGTH)
-        with self.lock:
-            for y in range(BOARD_HEIGHT):
-                for x in range(BOARD_WIDTH):
-                    self.set_led(buffer, x, y, self.board[y][x])
-                    
-            if self.state == 'GAME_FINISHED':
-                if int(time.time() * 4) % 2 == 0:
-                    for i in range(len(buffer)): buffer[i] = 0
-        return buffer
+        self.sock_listen = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock_listen.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock_listen.settimeout(0.5)
+        try:
+            self.sock_listen.bind((self.bind_ip, self.listen_port))
+            self.log(f"Listening on {self.bind_ip}:{self.listen_port}")
+        except Exception as e:
+            self.log(f"Error binding listen port {self.listen_port}: {e}")
 
-    def set_led(self, buffer, x, y, color):
-        if x < 0 or x >= 16 or y < 0 or y >= 32: return
-        channel = y // 4
-        row_in_channel = y % 4
-        led_index = row_in_channel * 16 + x if row_in_channel % 2 == 0 else row_in_channel * 16 + (15 - x)
-        offset = led_index * (NUM_CHANNELS * 3) + channel
-        if offset + NUM_CHANNELS*2 < len(buffer):
-            buffer[offset] = color[1]   
-            buffer[offset + NUM_CHANNELS] = color[0]   
-            buffer[offset + NUM_CHANNELS*2] = color[2] 
-
-# --- Network Manager ---
-class NetworkManager:
-    def __init__(self, game):
-        self.game = game
         self.sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_send.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        self.sock_recv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.running = True
-        self.sequence_number = 0
-        try:
-            self.sock_recv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.sock_recv.bind(("0.0.0.0", UDP_LISTEN_PORT))
-        except: pass
-
-    def send_loop(self):
-        while self.running:
-            frame = self.game.render()
-            self.send_packet(frame)
-            time.sleep(0.05) 
-
-    def send_packet(self, frame_data):
-        self.sequence_number = (self.sequence_number + 1) & 0xFFFF
-        if self.sequence_number == 0: self.sequence_number = 1
-        port = UDP_SEND_PORT
         
-        sp = bytearray([0x75, random.randint(0,127), random.randint(0,127), 0x00, 0x08, 0x02, 0x00, 0x00, 0x33, 0x44, (self.sequence_number >> 8) & 0xFF, self.sequence_number & 0xFF, 0x00, 0x00, 0x00, 0x0E, 0x00])
-        try: self.sock_send.sendto(sp, (UDP_SEND_IP, port)); self.sock_send.sendto(sp, ("127.0.0.1", port))
-        except: pass
-
-        f_p = bytearray()
-        for _ in range(NUM_CHANNELS): f_p += bytes([(LEDS_PER_CHANNEL >> 8) & 0xFF, LEDS_PER_CHANNEL & 0xFF])
-        f_i = bytearray([0x02, 0x00, 0x00, 0x88, 0x77, 0xFF, 0xF0, (len(f_p) >> 8) & 0xFF, (len(f_p) & 0xFF)]) + f_p
-        f_pkt = bytearray([0x75, random.randint(0,127), random.randint(0,127), ((len(f_i)-1) >> 8) & 0xFF, ((len(f_i)-1) & 0xFF)]) + f_i + bytearray([0x1E, 0x00])
-        try: self.sock_send.sendto(f_pkt, (UDP_SEND_IP, port)); self.sock_send.sendto(f_pkt, ("127.0.0.1", port))
-        except: pass
-        
-        chunk_size = 984 
-        d_idx = 1
-        for i in range(0, len(frame_data), chunk_size):
-            chk = frame_data[i:i+chunk_size]
-            d_i = bytearray([0x02, 0x00, 0x00, 0x88, 0x77, (d_idx >> 8) & 0xFF, d_idx & 0xFF, (len(chk) >> 8) & 0xFF, (len(chk) & 0xFF)]) + chk
-            d_pkt = bytearray([0x75, random.randint(0,127), random.randint(0,127), ((len(d_i)-1) >> 8) & 0xFF, ((len(d_i)-1) & 0xFF)]) + d_i
-            d_pkt.append(0x1E if len(chk) == 984 else 0x36); d_pkt.append(0x00)
-            try: self.sock_send.sendto(d_pkt, (UDP_SEND_IP, port)); self.sock_send.sendto(d_pkt, ("127.0.0.1", port))
+        # Use a specific source IP for sending if bound to a specific interface
+        try: 
+            self.sock_send.bind((self.bind_ip, 0))
+            self.log(f"Sender bound to {self.bind_ip}")
+        except: 
+            try: self.sock_send.bind(("0.0.0.0", 0))
             except: pass
-            d_idx += 1; time.sleep(0.005)
 
-        ep = bytearray([0x75, random.randint(0,127), random.randint(0,127), 0x00, 0x08, 0x02, 0x00, 0x00, 0x55, 0x66, (self.sequence_number >> 8) & 0xFF, self.sequence_number & 0xFF, 0x00, 0x00, 0x00, 0x0E, 0x00])
-        try: self.sock_send.sendto(ep, (UDP_SEND_IP, port)); self.sock_send.sendto(ep, ("127.0.0.1", port))
+    def draw_grid(self):
+        self.canvas.delete("all")
+        w = self.canvas.winfo_width()
+        h = self.canvas.winfo_height()
+        if w < 10 or h < 10:
+             w = BOARD_WIDTH * self.cell_size
+             h = BOARD_HEIGHT * self.cell_size
+             
+        cell_w = w / BOARD_WIDTH
+        cell_h = h / BOARD_HEIGHT
+        self.cell_size = min(cell_w, cell_h)
+        
+        offset_x = (w - (self.cell_size * BOARD_WIDTH)) / 2
+        offset_y = (h - (self.cell_size * BOARD_HEIGHT)) / 2
+
+        self.rects = {}
+        self.trigger_texts = {}
+        for y in range(BOARD_HEIGHT):
+            for x in range(BOARD_WIDTH):
+                x1 = offset_x + x * self.cell_size
+                y1 = offset_y + y * self.cell_size
+                x2 = x1 + self.cell_size
+                y2 = y1 + self.cell_size
+                
+                ch, led = self._xy_to_ch_led(x, y)
+                is_triggered = (ch, led) in self.pressed_leds
+                
+                color = self.grid_data[(x, y)]
+                hex_col = "#%02x%02x%02x" % color
+                
+                # Outline white if triggered, dark grey otherwise
+                self.rects[(x, y)] = self.canvas.create_rectangle(
+                    x1, y1, x2, y2, fill=hex_col, outline="white" if is_triggered else "#222222", width=2 if is_triggered else 1
+                )
+                
+                if is_triggered:
+                    lum = 0.299*color[0] + 0.587*color[1] + 0.114*color[2]
+                    t_col = "black" if lum > 128 else "white"
+                    self.trigger_texts[(x, y)] = self.canvas.create_text(
+                        x1 + self.cell_size/2, y1 + self.cell_size/2, text="T", fill=t_col, font=("Consolas", int(self.cell_size*0.6) or 8, "bold")
+                    )
+
+    def on_resize(self, event):
+        self.draw_grid()
+
+    def update_pixel(self, x, y, r, g, b, timestamp=None):
+        if (x, y) in self.rects:
+            color = (r, g, b)
+            if timestamp is not None: self.pixel_timestamps[(x, y)] = timestamp
+            
+            # Recheck trigger state for this pixel
+            ch, led = self._xy_to_ch_led(x, y)
+            is_triggered = (ch, led) in self.pressed_leds
+            
+            # Update grid data and visual
+            self.grid_data[(x, y)] = color
+            hex_col = "#%02x%02x%02x" % color
+            
+            self.canvas.itemconfig(self.rects[(x, y)], fill=hex_col, outline="white" if is_triggered else "#222222", width=2 if is_triggered else 1)
+            
+            # Handle T text
+            if is_triggered:
+                lum = 0.299*color[0] + 0.587*color[1] + 0.114*color[2]
+                t_col = "black" if lum > 128 else "white"
+                
+                if (x, y) in self.trigger_texts:
+                    self.canvas.itemconfig(self.trigger_texts[(x, y)], fill=t_col)
+                    self.canvas.tag_raise(self.trigger_texts[(x, y)])
+                else:
+                    x1 = self.canvas.coords(self.rects[(x, y)])[0]
+                    y1 = self.canvas.coords(self.rects[(x, y)])[1]
+                    self.trigger_texts[(x, y)] = self.canvas.create_text(
+                        x1 + self.cell_size/2, y1 + self.cell_size/2, text="T", fill=t_col, font=("Consolas", int(self.cell_size*0.6) or 8, "bold")
+                    )
+            elif (x, y) in self.trigger_texts:
+                self.canvas.delete(self.trigger_texts[(x, y)])
+                del self.trigger_texts[(x, y)]
+
+    def flash_rx(self):
+        self.lbl_rx.config(fg="#0f0")
+        if hasattr(self, '_rx_timer'): self.root.after_cancel(self._rx_timer)
+        self._rx_timer = self.root.after(50, lambda: self.lbl_rx.config(fg="#555"))
+
+    def update_stats(self):
+        if self.running:
+            self.lbl_stats.config(text=f"Packets: {self.packet_count}")
+            self.root.after(500, self.update_stats)
+
+    def toggle_fullscreen(self, event=None):
+        self.fullscreen = not self.fullscreen
+        self.root.attributes("-fullscreen", self.fullscreen)
+        self.root.update()
+        self.draw_grid()
+
+    def exit_fullscreen(self, event=None):
+        if self.fullscreen:
+            self.fullscreen = False
+            self.root.attributes("-fullscreen", False)
+            self.root.update()
+            self.draw_grid()
+
+    def _get_button_pos(self, event):
+        w = self.canvas.winfo_width()
+        h = self.canvas.winfo_height()
+        offset_x = (w - (self.cell_size * BOARD_WIDTH)) / 2
+        offset_y = (h - (self.cell_size * BOARD_HEIGHT)) / 2
+        rel_x, rel_y = event.x - offset_x, event.y - offset_y
+        x, y = int(rel_x // self.cell_size), int(rel_y // self.cell_size)
+
+        if 0 <= x < BOARD_WIDTH and 0 <= y < BOARD_HEIGHT:
+            return x, y
+        return None, None
+
+    def _xy_to_ch_led(self, x, y):
+        ch = y // 4
+        row_in_channel = y % 4
+        led = (row_in_channel * 16 + x) if row_in_channel % 2 == 0 else (row_in_channel * 16 + (15 - x))
+        return ch, led
+
+    def on_press(self, event):
+        x, y = self._get_button_pos(event)
+        if x is not None:
+            self.current_pressed_pos = (x, y)
+            ch, led = self._xy_to_ch_led(x, y)
+            self.pressed_leds.add((ch, led))
+            self.update_pixel(x, y, *self.grid_data[(x, y)]) # Force visual update
+            self.log(f"Input Trigger Pressed: Row {y}, Col {x}")
+            self.send_input_packet()
+
+    def on_motion(self, event):
+        x, y = self._get_button_pos(event)
+        if (x, y) != getattr(self, 'current_pressed_pos', None):
+            # Release previous
+            if getattr(self, 'current_pressed_pos', None) is not None:
+                old_x, old_y = self.current_pressed_pos
+                old_ch, old_led = self._xy_to_ch_led(old_x, old_y)
+                self.pressed_leds.discard((old_ch, old_led))
+            
+            # Press new
+            self.current_pressed_pos = (x, y) if x is not None else None
+            if x is not None:
+                ch, led = self._xy_to_ch_led(x, y)
+                self.pressed_leds.add((ch, led))
+                self.update_pixel(x, y, *self.grid_data[(x, y)]) # Force visual update
+                self.log(f"Input Trigger Swiped To: Row {y}, Col {x}")
+            
+            self.send_input_packet()
+
+    def on_release(self, event):
+        if getattr(self, 'current_pressed_pos', None) is not None:
+            x, y = self.current_pressed_pos
+            ch, led = self._xy_to_ch_led(x, y)
+            self.pressed_leds.discard((ch, led))
+            self.update_pixel(x, y, *self.grid_data[(x, y)]) # Force visual update
+            self.log(f"Input Trigger Released: Row {y}, Col {x}")
+            self.current_pressed_pos = None
+            self.send_input_packet()
+
+    def send_input_packet(self):
+        pkt = bytearray(1373)
+        pkt[0] = 0x88
+        pkt[1] = 0x01
+        
+        has_triggers = False
+        for ch in range(8):
+            base = 2 + ch * 171
+            pkt[base] = 0x00
+            for idx in range(64):
+                if (ch, idx) in self.pressed_leds:
+                    pkt[base + 1 + idx] = 0xCC
+                    has_triggers = True
+                else:
+                    pkt[base + 1 + idx] = 0x00
+                    
+        if has_triggers:
+            print(f"Simulator SENDING 1373-byte packet with ACTIVE triggers: {self.pressed_leds}")
+            
+        pkt[-1] = sum(pkt[:-1]) & 0xFF
+        
+        # To hit all targets without broadcasts, we spray to localhost + broadcast
+        # Using the configurable self.send_port
+        targets = [("127.0.0.1", self.send_port), ("255.255.255.255", self.send_port)]
+        
+        for addr in targets:
+            try:
+                self.sock_send.sendto(pkt, addr)
+            except:
+                pass
+        
+        try:
+            if getattr(self, "bind_ip", None) and self.bind_ip not in ["0.0.0.0", "127.0.0.1"]:
+                parts = self.bind_ip.split('.')
+                bcast = f"{parts[0]}.{parts[1]}.{parts[2]}.255"
+                self.sock_send.sendto(pkt, (bcast, self.send_port))
+            else:
+                self.sock_send.sendto(pkt, ("255.255.255.255", self.send_port))
         except: pass
 
-    def recv_loop(self):
+    def network_loop(self):
         while self.running:
             try:
-                data, _ = self.sock_recv.recvfrom(2048)
-                if len(data) >= 1373 and data[0] == 0x88:
-                    for c in range(8):
-                        offset = 2 + (c * 171) + 1 
-                        for i, val in enumerate(data[offset : offset + 64]):
-                            self.game.button_states[(c * 64) + i] = (val == 0xCC)
+                data, addr = self.sock_listen.recvfrom(2048)
+                if not data: continue
+                self.packet_count += 1
+                
+                if data == b'y' or data[0] == 0x67: # Discovery (support both 'y' and 0x67 pings)
+                    self.log(f"Discovery Ping from {addr}")
+                    self.sock_send.sendto(b'y', addr)
+                    self.log(f"Sent 'y' response to {addr}")
+                    continue
+                
+                if data[0] == 0x75 and len(data) >= 10:
+                    cmd_type = struct.unpack(">H", data[8:10])[0]
+                    if cmd_type == 0x8877: # Data
+                        self.root.after(0, self.flash_rx)
+                        pkt_idx = struct.unpack(">H", data[10:12])[0]
+                        chunk = data[14:-2]
+                        base_offset = (pkt_idx - 1) * 984
+                        for i in range(len(chunk)):
+                            if base_offset + i < len(self.frame_buffer):
+                                self.frame_buffer[base_offset + i] = chunk[i]
+                    elif cmd_type == 0x5566: # End Frame
+                        # self.log("End Frame Received")
+                        self.root.after(0, self.refresh_from_buffer)
+                    elif cmd_type == 0x3344: # Start Frame
+                        self.log(f"Frame Start from {addr[0]}")
+                        self.frame_buffer = bytearray(len(self.frame_buffer))
             except: pass
 
-if __name__ == "__main__":
-    game = PhysicalBlockParty()
-    net = NetworkManager(game)
-    
-    threading.Thread(target=net.send_loop, daemon=True).start()
-    threading.Thread(target=net.recv_loop, daemon=True).start()
-    
-    print("="*40)
-    print("MATRIX ROOM: BLOCK PARTY MARATHON")
-    print("="*40)
-    print("Scrie 'start' si apasa Enter pentru a incepe!")
-    print("Scrie 'quit' pentru a iesi.")
-    
-    def logic_loop():
-        while game.running:
-            game.tick()
-            time.sleep(0.01) 
-            
-    threading.Thread(target=logic_loop, daemon=True).start()
-    
-    try:
-        while game.running:
-            cmd = input("> ").strip().lower()
-            if cmd == 'start':
-                game.initiate_start_sequence()
-            elif cmd == 'quit' or cmd == 'exit':
-                game.running = False
-                break
-    except KeyboardInterrupt:
-        game.running = False
+    def timeout_loop(self):
+        while self.running:
+            time.sleep(1.0)
+            now = time.time()
+            to_clear = []
+            for pos, ts in self.pixel_timestamps.items():
+                if ts != 0 and (now - ts) > PIXEL_TIMEOUT:
+                    if self.grid_data[pos] != (0, 0, 0):
+                        to_clear.append(pos)
+            if to_clear:
+                self.root.after(0, lambda: self.clear_pixels(to_clear))
 
-    net.running = False
+    def clear_pixels(self, pixels):
+        for pos in pixels:
+            # self.log(f"Pixel Timeout: {pos}")
+            self.update_pixel(pos[0], pos[1], 0, 0, 0, timestamp=0)
+
+    def refresh_from_buffer(self):
+        now = time.time()
+        # Default to Swapped (GRB) as it matches Hardware/Matrix_GUI
+        for led_pos in range(LEDS_PER_CHANNEL):
+            for channel in range(NUM_CHANNELS):
+                offset = led_pos * 24 + channel
+                c1 = self.frame_buffer[offset]
+                c2 = self.frame_buffer[offset + 8]
+                c3 = self.frame_buffer[offset + 16]
+                
+                row = led_pos // 16
+                x = (led_pos % 16) if row % 2 == 0 else (15 - (led_pos % 16))
+                y = channel * 4 + row
+                
+                r, g, b = c2, c1, c3 # Swapped G, R, B
+                
+                if 0 <= x < BOARD_WIDTH and 0 <= y < BOARD_HEIGHT:
+                    self.update_pixel(x, y, r, g, b, timestamp=now if (r or g or b) else 0)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    sim = MatrixSimulator(root)
+    root.mainloop()
+    sim.running = False
