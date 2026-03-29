@@ -219,8 +219,8 @@ class PhysicalBlockParty:
     def start_game_logic(self):
         self.round = 1
         self.score = 0
-        self.global_timer = 10 * 60  
-        self.last_printed_minute = 10
+        self.global_timer = 7 * 60  
+        self.last_printed_minute = 7
         self.start_round()
 
     def start_round(self):
@@ -306,15 +306,15 @@ class PhysicalBlockParty:
                     self.board[y*2+1][x*2+1] = color
                     self.blob_board[y*2+1][x*2+1] = bid
 
-            elapsed_seconds = (10 * 60) - self.global_timer
+            elapsed_seconds = (7 * 60) - self.global_timer
             
-            if elapsed_seconds >= 300:   
-                target_count = random.randint(1, 2)
+            if elapsed_seconds >= 250:   
+                target_count = random.randint(2, 3)
                 target_size = 1 
-            elif elapsed_seconds >= 180: 
+            elif elapsed_seconds >= 150: 
                 target_count = random.randint(2, 3)
                 target_size = random.randint(2, 3)
-            elif elapsed_seconds >= 90:  
+            elif elapsed_seconds >= 60:  
                 target_count = random.randint(3, 4)
                 target_size = random.randint(3, 4)
             else:                        
