@@ -1,3 +1,6 @@
+# Block Party - Remember the color desplayed and step only on those tiles! Get the highest score
+#               before time runs out.
+
 import socket
 import time
 import threading
@@ -6,9 +9,9 @@ import os
 import math
 import tkinter as tk  
 
-# --- CONFIGURARE DASHBOARD (MONITOR 2) ---
-DASHBOARD_FULLSCREEN = False  # Schimba in True cand pui in productie
-DASHBOARD_MONITOR = 1         # 0 = Primul monitor, 1 = Al doilea monitor
+# --- DASHBOARD CONFIGURATION (MONITOR 2) ---
+DASHBOARD_FULLSCREEN = False  # Change to True for production
+DASHBOARD_MONITOR = 1         # 0 = First monitor, 1 = Second monitor
 # -----------------------------------------
 
 try:
@@ -16,9 +19,8 @@ try:
     PYGAME_AVAILABLE = True
 except ImportError:
     PYGAME_AVAILABLE = False
-    print("Pygame lipseste. Instaleaza cu: pip install pygame")
 
-# --- Configurare Retea Matrix Room ---
+# --- Matrix Room Network Configuration ---
 UDP_SEND_IP = "255.255.255.255"
 UDP_SEND_PORT = 6967
 UDP_LISTEN_PORT = 5555
@@ -28,9 +30,9 @@ LEDS_PER_CHANNEL = 64
 FRAME_DATA_LENGTH = NUM_CHANNELS * LEDS_PER_CHANNEL * 3
 
 BOARD_WIDTH = 16
-BOARD_HEIGHT = 32 # 512 placi fizice
+BOARD_HEIGHT = 32 # 512 physical tiles
 
-# --- Culori Joc ---
+# --- Game Colors ---
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 RED = (255, 0, 0)
@@ -45,14 +47,14 @@ PINK = (255, 133, 158)
 
 COLORS_LIST = [PINK, GREEN, BLUE, YELLOW, CYAN, MAGENTA, ORANGE, PURPLE]
 
-# --- Font pentru Numaratoare (5x7 scalat x2) ---
+# --- Countdown Font (5x7 scaled x2) ---
 DIGITS = {
     3: [" ### ", "#   #", "    #", "  ## ", "    #", "#   #", " ### "],
     2: [" ### ", "#   #", "    #", "  ## ", " #   ", "#    ", "#####"],
     1: ["  #  ", " ##  ", "# #  ", "  #  ", "  #  ", "  #  ", "#####"]
 }
 
-# --- Font compact pentru LedITall pe orizontala ---
+# --- Compact font for horizontal LedITall ---
 FONT_LEDITALL = {
     'L': ["#  ", "#  ", "#  ", "#  ", "###"],
     'e': [" ##", "# #", "###", "#  ", "###"],
@@ -68,25 +70,36 @@ TEXT_BRAND = "LedITall"
 class SoundManager:
     def __init__(self):
         self.enabled = PYGAME_AVAILABLE
-        
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         
         if self.enabled:
-            pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
+            # Reset the mixer and give it multiple channels to avoid audio blockages
+            if pygame.mixer.get_init():
+                pygame.mixer.quit()
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+            pygame.mixer.set_num_channels(32) # Open 32 simultaneous channels
             
             self._generate_sounds()
             
             self.snd_tick = pygame.mixer.Sound(os.path.join(self.base_dir, "tick.wav"))
             self.snd_error = pygame.mixer.Sound(os.path.join(self.base_dir, "error2.wav"))
-            self.snd_win = pygame.mixer.Sound(os.path.join(self.base_dir, "win.wav"))
+            self.snd_win = pygame.mixer.Sound(os.path.join(self.base_dir, "win2.wav"))
             self.snd_start = pygame.mixer.Sound(os.path.join(self.base_dir, "start.wav"))
             
+            # FORCE effects volume to MAXIMUM (1.0)
+            self.snd_tick.set_volume(1.0)
+            self.snd_error.set_volume(1.0)
+            self.snd_win.set_volume(1.0)
+            self.snd_start.set_volume(1.0)
+            
             try:
-                bgm_path = os.path.join(self.base_dir, "bgm.wav")
+                bgm_path = os.path.join(self.base_dir, "start3.mp3")
                 pygame.mixer.music.load(bgm_path)
-                pygame.mixer.music.set_volume(1.0) 
+                # Play the background music MUCH softer to hear the effects clearly
+                pygame.mixer.music.set_volume(0.7) 
+                pygame.mixer.music.play(-1) 
             except:
-                print("Eroare la incarcarea bgm.wav")
+                pass
 
     def _generate_sounds(self):
         import wave, struct
@@ -120,30 +133,31 @@ class SoundManager:
         
         make_wav("tick.wav", 1000, 0.05)   
         make_wav("error2.wav", 150, 0.8)    
-        make_wav("win.wav", 600, 0.4)      
+        make_wav("win2.wav", 600, 0.4)      
         make_wav("start.wav", 400, 0.8)    
         make_bgm("bgm.wav")
 
     def play(self, name):
         if not self.enabled: return
         try:
-            if name == 'tick': self.snd_tick.play()
-            elif name == 'error': self.snd_error.play()
-            elif name == 'win': self.snd_win.play()
-            elif name == 'start': self.snd_start.play()
-        except: pass
+            if name == 'tick': 
+                self.snd_tick.play()
+            elif name == 'error': 
+                self.snd_error.stop() # Ensure it doesn't overlap itself
+                self.snd_error.play()
+            elif name == 'win': 
+                self.snd_win.stop()
+                self.snd_win.play()
+            elif name == 'start': 
+                self.snd_start.play()
+        except: 
+            pass
 
     def play_bgm(self):
-        if not self.enabled: return
-        try:
-            pygame.mixer.music.play(-1) 
-        except: pass
+        pass
 
     def stop_bgm(self):
-        if not self.enabled: return
-        try:
-            pygame.mixer.music.stop()
-        except: pass
+        pass
 
 # --- Helper Logic ---
 def blocks_touch(b1, b2):
@@ -151,8 +165,22 @@ def blocks_touch(b1, b2):
     x2, y2, w2, h2 = b2
     return not (x1 + w1 < x2 or x2 + w2 < x1 or y1 + h1 < y2 or y2 + h2 < y1)
 
+# --- Helper Logic for Stars ---
+def get_star_points(x, y, radius, points=5):
+    """Calculates the coordinates of a star-shaped polygon"""
+    inner_radius = radius * 0.4
+    angle = math.pi / points
+    vertices = []
+    for i in range(2 * points):
+        r = radius if i % 2 == 0 else inner_radius
+        a = i * angle - math.pi / 2
+        vx = x + math.cos(a) * r
+        vy = y + math.sin(a) * r
+        vertices.append((vx, vy))
+    return vertices
 
-# --- Logica Jocului Fizic ---
+
+# --- Physical Game Logic ---
 class PhysicalBlockParty:
     def __init__(self):
         self.board = [[BLACK for _ in range(BOARD_WIDTH)] for _ in range(BOARD_HEIGHT)]
@@ -187,19 +215,12 @@ class PhysicalBlockParty:
             self.last_tick_time = time.time()
             self.last_seq_sec = 6
             self.audio.play_bgm() 
-            print("\n" + "="*40)
-            print("✨ PREGATIRE JOC... BRANDING INIT ✨")
-            print("="*40)
 
     def start_game_logic(self):
         self.round = 1
         self.score = 0
         self.global_timer = 10 * 60  
         self.last_printed_minute = 10
-        
-        print("\n" + "🚀"*10)
-        print(" JOCUL A INCEPUT! TIMP: 10 MINUTE")
-        print("🚀"*10)
         self.start_round()
 
     def start_round(self):
@@ -214,8 +235,6 @@ class PhysicalBlockParty:
             
             self.round_timer = 3.0 
             self.last_tick_time = time.time()
-            print(f"\n--- RUNDA {self.round} | SCOR ACTUAL: {self.score} ---")
-            print("👁️ Memorati culoarea!")
 
     def generate_blocks(self):
         with self.lock:
@@ -369,8 +388,6 @@ class PhysicalBlockParty:
             if wrong_tiles_pressed > 0:
                 penalty = wrong_tiles_pressed * 5
                 self.score -= penalty
-                print(f"❌ EROARE! Ati calcat pe {wrong_tiles_pressed} placi gresite.")
-                print(f"📉 Penalizare: -{penalty} puncte. Scor actual: {self.score}")
                 self.audio.play('error')
                 
                 self.frozen_board = [row[:] for row in self.board]
@@ -380,8 +397,6 @@ class PhysicalBlockParty:
             
             elif correct_tiles_pressed > 0:
                 self.score += 10
-                print(f"✅ PERFECT! Toti sunteti in siguranta.")
-                print(f"📈 Bonus: +10 puncte. Scor actual: {self.score}")
                 self.audio.play('win')
                 self.round += 1
                 
@@ -391,7 +406,6 @@ class PhysicalBlockParty:
                             self.board[y][x] = BLACK
                 self.state = 'ROUND_OVER'
             else:
-                print("⚠️ Nimeni nu a calcat pe nicio placa! 0 puncte.")
                 self.audio.play('error')
                 for y in range(BOARD_HEIGHT):
                     for x in range(BOARD_WIDTH):
@@ -405,12 +419,6 @@ class PhysicalBlockParty:
         with self.lock:
             self.state = 'GAME_FINISHED'
             self.audio.stop_bgm() 
-            
-            print("\n" + "🌟"*20)
-            print("   TIMPUL A EXPIRAT! JOCUL S-A TERMINAT")
-            print(f"   SCORUL VOSTRU FINAL ESTE: {self.score} PUNCTE")
-            print("🌟"*20 + "\n")
-            
             self.audio.play('win')
             for y in range(BOARD_HEIGHT):
                 for x in range(BOARD_WIDTH):
@@ -429,7 +437,7 @@ class PhysicalBlockParty:
                 for r_idx, row in enumerate(glyph):
                     for c_idx, pixel in enumerate(row):
                         if pixel == '#':
-                            board_y = 31 - (curr_y + c_idx)
+                            board_y = curr_y + c_idx
                             board_x = 10 - r_idx 
                             
                             ratio = board_y / 31.0
@@ -547,7 +555,6 @@ class PhysicalBlockParty:
         
         current_minute = int(self.global_timer // 60)
         if current_minute != self.last_printed_minute and current_minute >= 0:
-            print(f"⏳ Timp global ramas: {current_minute} minute")
             self.last_printed_minute = current_minute
 
         if self.global_timer <= 0:
@@ -561,15 +568,12 @@ class PhysicalBlockParty:
                 self.generate_blocks()
                 self.state = 'PLAYING'
                 self.round_timer = max(2.5, 6.4 - (self.round * 0.4))
-                self.last_second_beep = int(self.round_timer)
-                
+                self.last_second_beep = int(math.ceil(self.round_timer))
                 self.audio.play_bgm()
-                
-                print("🏃 FUGEEETI catre culoare!")
 
         elif self.state == 'PLAYING':
             self.round_timer -= dt
-            current_sec = int(self.round_timer)
+            current_sec = int(math.ceil(self.round_timer))
             
             if current_sec != self.last_second_beep and current_sec > 0 and current_sec <= 3:
                 self.audio.play('tick')
@@ -631,7 +635,8 @@ class NetworkManager:
         try:
             self.sock_recv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.sock_recv.bind(("0.0.0.0", UDP_LISTEN_PORT))
-        except: pass
+        except: 
+            pass
 
     def send_loop(self):
         while self.running:
@@ -641,19 +646,29 @@ class NetworkManager:
 
     def send_packet(self, frame_data):
         self.sequence_number = (self.sequence_number + 1) & 0xFFFF
-        if self.sequence_number == 0: self.sequence_number = 1
+        if self.sequence_number == 0: 
+            self.sequence_number = 1
         port = UDP_SEND_PORT
         
         sp = bytearray([0x75, random.randint(0,127), random.randint(0,127), 0x00, 0x08, 0x02, 0x00, 0x00, 0x33, 0x44, (self.sequence_number >> 8) & 0xFF, self.sequence_number & 0xFF, 0x00, 0x00, 0x00, 0x0E, 0x00])
-        try: self.sock_send.sendto(sp, (UDP_SEND_IP, port)); self.sock_send.sendto(sp, ("127.0.0.1", port))
-        except: pass
+        try: 
+            self.sock_send.sendto(sp, (UDP_SEND_IP, port))
+            self.sock_send.sendto(sp, ("127.0.0.1", port))
+        except: 
+            pass
 
         f_p = bytearray()
-        for _ in range(NUM_CHANNELS): f_p += bytes([(LEDS_PER_CHANNEL >> 8) & 0xFF, LEDS_PER_CHANNEL & 0xFF])
+        for _ in range(NUM_CHANNELS): 
+            f_p += bytes([(LEDS_PER_CHANNEL >> 8) & 0xFF, LEDS_PER_CHANNEL & 0xFF])
+        
         f_i = bytearray([0x02, 0x00, 0x00, 0x88, 0x77, 0xFF, 0xF0, (len(f_p) >> 8) & 0xFF, (len(f_p) & 0xFF)]) + f_p
         f_pkt = bytearray([0x75, random.randint(0,127), random.randint(0,127), ((len(f_i)-1) >> 8) & 0xFF, ((len(f_i)-1) & 0xFF)]) + f_i + bytearray([0x1E, 0x00])
-        try: self.sock_send.sendto(f_pkt, (UDP_SEND_IP, port)); self.sock_send.sendto(f_pkt, ("127.0.0.1", port))
-        except: pass
+        
+        try: 
+            self.sock_send.sendto(f_pkt, (UDP_SEND_IP, port))
+            self.sock_send.sendto(f_pkt, ("127.0.0.1", port))
+        except: 
+            pass
         
         chunk_size = 984 
         d_idx = 1
@@ -661,14 +676,25 @@ class NetworkManager:
             chk = frame_data[i:i+chunk_size]
             d_i = bytearray([0x02, 0x00, 0x00, 0x88, 0x77, (d_idx >> 8) & 0xFF, d_idx & 0xFF, (len(chk) >> 8) & 0xFF, (len(chk) & 0xFF)]) + chk
             d_pkt = bytearray([0x75, random.randint(0,127), random.randint(0,127), ((len(d_i)-1) >> 8) & 0xFF, ((len(d_i)-1) & 0xFF)]) + d_i
-            d_pkt.append(0x1E if len(chk) == 984 else 0x36); d_pkt.append(0x00)
-            try: self.sock_send.sendto(d_pkt, (UDP_SEND_IP, port)); self.sock_send.sendto(d_pkt, ("127.0.0.1", port))
-            except: pass
-            d_idx += 1; time.sleep(0.005)
+            
+            d_pkt.append(0x1E if len(chk) == 984 else 0x36)
+            d_pkt.append(0x00)
+            
+            try: 
+                self.sock_send.sendto(d_pkt, (UDP_SEND_IP, port))
+                self.sock_send.sendto(d_pkt, ("127.0.0.1", port))
+            except: 
+                pass
+            
+            d_idx += 1
+            time.sleep(0.005)
 
         ep = bytearray([0x75, random.randint(0,127), random.randint(0,127), 0x00, 0x08, 0x02, 0x00, 0x00, 0x55, 0x66, (self.sequence_number >> 8) & 0xFF, self.sequence_number & 0xFF, 0x00, 0x00, 0x00, 0x0E, 0x00])
-        try: self.sock_send.sendto(ep, (UDP_SEND_IP, port)); self.sock_send.sendto(ep, ("127.0.0.1", port))
-        except: pass
+        try: 
+            self.sock_send.sendto(ep, (UDP_SEND_IP, port))
+            self.sock_send.sendto(ep, ("127.0.0.1", port))
+        except: 
+            pass
 
     def recv_loop(self):
         while self.running:
@@ -679,10 +705,10 @@ class NetworkManager:
                         offset = 2 + (c * 171) + 1 
                         for i, val in enumerate(data[offset : offset + 64]):
                             self.game.button_states[(c * 64) + i] = (val == 0xCC)
-            except: pass
+            except: 
+                pass
 
-
-# --- Clasa pentru Dashboard (Monitorul 2) ---
+# --- Dashboard Class (Monitor 2) ---
 class Dashboard:
     def __init__(self, game):
         self.game = game
@@ -692,6 +718,14 @@ class Dashboard:
         self.font_medium = None
         self.font_small = None
         self.clock = None
+        
+        self.bg_stars = []
+        for _ in range(150): 
+            x = random.randint(0, 4000)
+            y = random.randint(0, 3000)
+            radius = random.randint(5, 20)
+            color_idx = random.randint(0, 3)
+            self.bg_stars.append({"x": x, "y": y, "r": radius, "c": color_idx, "base_a": random.random() * math.pi})
 
     def format_time(self, seconds):
         if seconds <= 0:
@@ -699,6 +733,28 @@ class Dashboard:
         m = int(seconds // 60)
         s = int(seconds % 60)
         return f"{m:02d}:{s:02d}"
+
+    def draw_full_background(self, surface, w, h):
+        """Draws the background sprinkled with star polygons"""
+        surface.fill((18, 18, 24))
+        
+        colors = [(139, 233, 253), (80, 250, 123), (255, 121, 198), (241, 250, 140)]
+        t = time.time()
+        
+        for star in self.bg_stars:
+            if star["x"] > w or star["y"] > h:
+                continue
+                
+            # Subtle pulsation
+            alpha = (math.sin(t * 2 + star["base_a"]) + 1) / 2 * 0.5 + 0.1 
+            
+            base_color = colors[star["c"]]
+            r = int(base_color[0] * alpha + 18 * (1 - alpha))
+            g = int(base_color[1] * alpha + 18 * (1 - alpha))
+            b = int(base_color[2] * alpha + 24 * (1 - alpha))
+            
+            points = get_star_points(star["x"], star["y"], star["r"])
+            pygame.draw.polygon(surface, (r, g, b), points)
 
     def run(self):
         if not PYGAME_AVAILABLE:
@@ -713,19 +769,18 @@ class Dashboard:
         if DASHBOARD_FULLSCREEN:
             self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN, display=target_display)
         else:
-            # Fereastra mai mica pentru teste locale
             self.screen = pygame.display.set_mode((800, 600), pygame.RESIZABLE, display=target_display)
             
-        pygame.display.set_caption("Block Party - Scor (Monitor 2)")
+        pygame.display.set_caption("Block Party - Score (Monitor 2)")
         
         try:
-            self.font_large = pygame.font.SysFont("courier", 180, bold=True)
-            self.font_medium = pygame.font.SysFont("courier", 80, bold=True)
-            self.font_small = pygame.font.SysFont("courier", 60, bold=True)
+            self.font_large = pygame.font.SysFont("courier", 140, bold=True)
+            self.font_medium = pygame.font.SysFont("courier", 60, bold=True)
+            self.font_small = pygame.font.SysFont("courier", 50, bold=True)
         except:
-            self.font_large = pygame.font.Font(None, 180)
-            self.font_medium = pygame.font.Font(None, 80)
-            self.font_small = pygame.font.Font(None, 60)
+            self.font_large = pygame.font.Font(None, 140)
+            self.font_medium = pygame.font.Font(None, 60)
+            self.font_small = pygame.font.Font(None, 50)
             
         self.clock = pygame.time.Clock()
         
@@ -742,7 +797,8 @@ class Dashboard:
                         self.running = False
                         self.game.running = False
 
-            self.screen.fill((15, 15, 20))
+            # Background with just polygonal stars
+            self.draw_full_background(self.screen, screen_width, screen_height)
             
             with self.game.lock:
                 score = self.game.score
@@ -750,45 +806,66 @@ class Dashboard:
                 time_left = self.game.global_timer
                 state = self.game.state
 
-            # Randam Starea
+            # --- HEADER FOR STATUS ---
+            pygame.draw.rect(self.screen, (30, 30, 42), (0, 0, screen_width, screen_height * 0.2))
+            pygame.draw.line(self.screen, (50, 50, 70), (0, screen_height * 0.2), (screen_width, screen_height * 0.2), 4)
+
             if getattr(self.game, 'is_paused', False):
-                status_text = "PAUZA"
-                status_color = (255, 255, 0)
+                status_text = "PAUSE"
+                status_color = (255, 204, 0)
             elif state == 'WAITING_TO_START':
-                status_text = "ASTEAPTA START"
-                status_color = (150, 150, 150)
+                status_text = "WAITING TO START"
+                status_color = (150, 150, 160)
             elif state == 'GAME_FINISHED':
-                status_text = "JOC TERMINAT"
-                status_color = (255, 50, 50)
+                status_text = "GAME OVER"
+                status_color = (255, 85, 85)
             else:
-                status_text = f"RUNDA {round_num}"
-                status_color = (50, 255, 50)
+                status_text = f"ROUND {round_num}"
+                status_color = (80, 250, 123)
                 
+            surf_status_shadow = self.font_small.render(status_text, True, (0, 0, 0))
             surf_status = self.font_small.render(status_text, True, status_color)
-            status_rect = surf_status.get_rect(center=(center_x, screen_height * 0.15))
+            status_rect = surf_status.get_rect(center=(center_x, screen_height * 0.1))
+            self.screen.blit(surf_status_shadow, status_rect.move(3, 3))
             self.screen.blit(surf_status, status_rect)
 
-            # Randam Timpul
+            # --- TIME PANEL ---
+            time_panel_rect = pygame.Rect(0, 0, min(screen_width * 0.7, 650), screen_height * 0.32)
+            time_panel_rect.center = (center_x, screen_height * 0.42)
+            pygame.draw.rect(self.screen, (25, 25, 35), time_panel_rect, border_radius=20)
+            pygame.draw.rect(self.screen, (60, 60, 80), time_panel_rect, width=3, border_radius=20)
+
             time_str = self.format_time(time_left)
-            time_color = (255, 50, 50) if time_left > 0 and time_left < 60 else (255, 255, 255)
+            time_color = (255, 85, 85) if time_left > 0 and time_left < 60 else (248, 248, 242)
             
-            surf_time_label = self.font_medium.render("TIMP RAMAS:", True, (200, 200, 200))
+            surf_time_label = self.font_medium.render("TIME LEFT:", True, (150, 150, 170))
             surf_time = self.font_large.render(time_str, True, time_color)
+            surf_time_shadow = self.font_large.render(time_str, True, (0, 0, 0))
             
-            time_label_rect = surf_time_label.get_rect(center=(center_x, screen_height * 0.38))
-            time_rect = surf_time.get_rect(center=(center_x, screen_height * 0.52))
+            # ABSOLUTE centering inside the time panel
+            time_label_rect = surf_time_label.get_rect(center=(time_panel_rect.centerx, time_panel_rect.top + time_panel_rect.height * 0.25))
+            time_rect = surf_time.get_rect(center=(time_panel_rect.centerx, time_panel_rect.bottom - time_panel_rect.height * 0.35))
             
             self.screen.blit(surf_time_label, time_label_rect)
+            self.screen.blit(surf_time_shadow, time_rect.move(4, 4)) 
             self.screen.blit(surf_time, time_rect)
 
-            # Randam Scorul
-            surf_score_label = self.font_medium.render("SCOR:", True, (200, 200, 200))
-            surf_score = self.font_large.render(f"{score}", True, (50, 200, 255))
+            # --- SCORE PANEL ---
+            score_panel_rect = pygame.Rect(0, 0, min(screen_width * 0.7, 650), screen_height * 0.32)
+            score_panel_rect.center = (center_x, screen_height * 0.78)
+            pygame.draw.rect(self.screen, (25, 25, 35), score_panel_rect, border_radius=20)
+            pygame.draw.rect(self.screen, (60, 60, 80), score_panel_rect, width=3, border_radius=20)
+
+            surf_score_label = self.font_medium.render("SCORE:", True, (150, 150, 170))
+            surf_score = self.font_large.render(f"{score}", True, (139, 233, 253))
+            surf_score_shadow = self.font_large.render(f"{score}", True, (0, 0, 0))
             
-            score_label_rect = surf_score_label.get_rect(center=(center_x, screen_height * 0.75))
-            score_rect = surf_score.get_rect(center=(center_x, screen_height * 0.88))
+            # ABSOLUTE centering inside the score panel
+            score_label_rect = surf_score_label.get_rect(center=(score_panel_rect.centerx, score_panel_rect.top + score_panel_rect.height * 0.25))
+            score_rect = surf_score.get_rect(center=(score_panel_rect.centerx, score_panel_rect.bottom - score_panel_rect.height * 0.35))
             
             self.screen.blit(surf_score_label, score_label_rect)
+            self.screen.blit(surf_score_shadow, score_rect.move(4, 4)) 
             self.screen.blit(surf_score, score_rect)
 
             pygame.display.flip()
@@ -799,17 +876,16 @@ class Dashboard:
 
 if __name__ == "__main__":
     game = PhysicalBlockParty()
-    game.is_paused = False # Variabila custom pentru pauza
+    game.is_paused = False 
     
     net = NetworkManager(game)
     threading.Thread(target=net.send_loop, daemon=True).start()
     threading.Thread(target=net.recv_loop, daemon=True).start()
     
-    # --- Bucla de logica ce permite PAUZA ---
+    # --- Logic loop allowing PAUSE ---
     def logic_loop():
         while game.running:
             if getattr(game, 'is_paused', False):
-                # Daca e pe pauza, tineti timpul "inghetat" ca sa nu scada brusc la repornire
                 game.last_tick_time = time.time()
             else:
                 game.tick()
@@ -817,38 +893,88 @@ if __name__ == "__main__":
             
     threading.Thread(target=logic_loop, daemon=True).start()
     
-    # --- Pornim ecranul secundar pe fundal ---
+    # --- Start the secondary screen in the background ---
     dashboard = Dashboard(game)
     threading.Thread(target=dashboard.run, daemon=True).start()
 
-    # --- INTERFATA GRAFICA PENTRU CONTROL (MONITOR 1) ---
+    # --- GRAPHICAL CONTROL INTERFACE (MONITOR 1) ---
     root = tk.Tk()
-    root.title("Panou Control - Block Party")
-    
-    # Setăm o mărime inițială mare, dar o facem să se adapteze
+    root.title("Control Panel - Block Party")
     root.geometry("1000x700") 
-    root.configure(bg="#2d2d2d")
     
-    # Containerul principal care va sta pe tot ecranul și va centra totul
-    main_container = tk.Frame(root, bg="#2d2d2d")
-    main_container.place(relx=0.5, rely=0.5, anchor=tk.CENTER) # Centrare absolută pe mijlocul ferestrei
+    # Modern Dark Theme color palette
+    BG_MAIN = "#121218" 
+    BG_PANEL = "#282A36"
+    BORDER_COLOR = "#44475A"
+    TEXT_LIGHT = "#F8F8F2"
+    COLOR_TIME = "#FF5555"
+    COLOR_SCORE = "#8BE9FD"
+    
+    root.configure(bg=BG_MAIN)
+    
+    # Add huge width and height to prevent clipping of the initial window in Linux
+    bg_canvas = tk.Canvas(root, bg=BG_MAIN, highlightthickness=0, width=4000, height=3000)
+    bg_canvas.place(x=0, y=0, relwidth=1, relheight=1)
+    
+    tk_stars = []
+    colors_rgb = [(139, 233, 253), (80, 250, 123), (255, 121, 198), (241, 250, 140)]
 
-    # Titlu Uriaș
-    lbl_title = tk.Label(main_container, text="BLOCK PARTY", font=("Courier", 70, "bold"), bg="#2d2d2d", fg="white")
-    lbl_title.pack(pady=40)
+    def create_tk_star(canvas, x, y, radius, color_idx):
+        points = get_star_points(x, y, radius)
+        flat_points = [coord for point in points for coord in point]
+        poly_id = canvas.create_polygon(*flat_points, fill="#000000", outline="")
+        return {
+            "id": poly_id,
+            "c": colors_rgb[color_idx],
+            "base_a": random.random() * math.pi
+        }
+
+    for _ in range(150): 
+        x = random.randint(0, 4000)
+        y = random.randint(0, 3000)
+        r = random.randint(5, 20)
+        c_idx = random.randint(0, 3)
+        star_data = create_tk_star(bg_canvas, x, y, r, c_idx)
+        tk_stars.append(star_data)
+
+    def rgb_to_hex(r, g, b):
+        return f"#{int(r):02x}{int(g):02x}{int(b):02x}"
+
+    def update_tk_stars():
+        if not game.running: return
+        t = time.time()
+        for star in tk_stars:
+            # Same pulsation math as Pygame
+            alpha = (math.sin(t * 2 + star["base_a"]) + 1) / 2 * 0.5 + 0.1 
+            r = int(star["c"][0] * alpha + 18 * (1 - alpha))
+            g = int(star["c"][1] * alpha + 18 * (1 - alpha))
+            b = int(star["c"][2] * alpha + 24 * (1 - alpha))
+            bg_canvas.itemconfig(star["id"], fill=rgb_to_hex(r, g, b))
+            
+        root.after(50, update_tk_stars) 
+
+    update_tk_stars() 
+
+    # Main container with margins and 'Card' style (central)
+    main_container = tk.Frame(root, bg=BG_PANEL, bd=0, highlightthickness=3, highlightbackground=BORDER_COLOR, padx=80, pady=60)
+    main_container.place(relx=0.5, rely=0.5, anchor=tk.CENTER) 
+
+    # Title
+    lbl_title = tk.Label(main_container, text="BLOCK PARTY", font=("Helvetica", 65, "bold"), bg=BG_PANEL, fg=TEXT_LIGHT)
+    lbl_title.pack(pady=(0, 40))
     
-    # Timp Uriaș
-    lbl_time = tk.Label(main_container, text="TIMP: 00:00", font=("Courier", 60, "bold"), bg="#2d2d2d", fg="#ff4d4d")
-    lbl_time.pack(pady=20)
+    # Time 
+    lbl_time = tk.Label(main_container, text="TIME: 00:00", font=("Consolas", 60, "bold"), bg=BG_PANEL, fg=COLOR_TIME)
+    lbl_time.pack(pady=15)
     
-    # Scor Uriaș
-    lbl_score = tk.Label(main_container, text="SCOR: 0", font=("Courier", 60, "bold"), bg="#2d2d2d", fg="#33ccff")
-    lbl_score.pack(pady=20)
+    # Score 
+    lbl_score = tk.Label(main_container, text="SCORE: 0", font=("Consolas", 60, "bold"), bg=BG_PANEL, fg=COLOR_SCORE)
+    lbl_score.pack(pady=(15, 40))
     
     def on_start():
         game.is_paused = False
         if PYGAME_AVAILABLE: pygame.mixer.music.unpause()
-        btn_pause.config(text="PAUZA", bg="orange")
+        btn_pause.config(text="PAUSE", bg="#FFB86C", fg=BG_PANEL)
         game.initiate_start_sequence()
         
     def on_pause():
@@ -856,25 +982,25 @@ if __name__ == "__main__":
             return
         game.is_paused = not getattr(game, 'is_paused', False)
         if game.is_paused:
-            btn_pause.config(text="REIA JOCUL", bg="yellow")
+            btn_pause.config(text="RESUME", bg="#F1FA8C", fg=BG_PANEL)
             if PYGAME_AVAILABLE: pygame.mixer.music.pause()
         else:
-            btn_pause.config(text="PAUZA", bg="orange")
+            btn_pause.config(text="PAUSE", bg="#FFB86C", fg=BG_PANEL)
             if PYGAME_AVAILABLE: pygame.mixer.music.unpause()
 
-    # Cadrul pentru butoane mari stânga-dreapta
-    btn_frame = tk.Frame(main_container, bg="#2d2d2d")
-    btn_frame.pack(pady=50)
+    # Button frame 
+    btn_frame = tk.Frame(main_container, bg=BG_PANEL)
+    btn_frame.pack(pady=20)
 
-    # Butoane mult mai masive
-    btn_start = tk.Button(btn_frame, text="START", font=("Arial", 40, "bold"), 
-                          bg="green", fg="white", command=on_start, 
-                          width=10, height=2, cursor="hand2")
+    # Buttons with "Flat Design"
+    btn_start = tk.Button(btn_frame, text="START", font=("Helvetica", 35, "bold"), 
+                          bg="#50FA7B", fg=BG_PANEL, activebackground="#5af182", 
+                          command=on_start, width=10, height=2, cursor="hand2", relief="flat")
     btn_start.pack(side=tk.LEFT, padx=30)
     
-    btn_pause = tk.Button(btn_frame, text="PAUZA", font=("Arial", 40, "bold"), 
-                          bg="orange", fg="black", command=on_pause, 
-                          width=10, height=2, cursor="hand2")
+    btn_pause = tk.Button(btn_frame, text="PAUSE", font=("Helvetica", 35, "bold"), 
+                          bg="#FFB86C", fg=BG_PANEL, activebackground="#ffc68a",
+                          command=on_pause, width=10, height=2, cursor="hand2", relief="flat")
     btn_pause.pack(side=tk.RIGHT, padx=30)
     
     def update_gui():
@@ -882,8 +1008,8 @@ if __name__ == "__main__":
             secs = max(0, game.global_timer)
             m = int(secs // 60)
             s = int(secs % 60)
-            lbl_time.config(text=f"TIMP: {m:02d}:{s:02d}")
-            lbl_score.config(text=f"SCOR: {game.score}")
+            lbl_time.config(text=f"TIME: {m:02d}:{s:02d}")
+            lbl_score.config(text=f"SCORE: {game.score}")
             root.after(100, update_gui)
             
     update_gui()
@@ -896,5 +1022,5 @@ if __name__ == "__main__":
     root.protocol("WM_DELETE_WINDOW", on_closing)
     root.mainloop()
 
-    # Cand inchizi fereastra mica, curatam restul
+    # When you close the small window, clean up the rest
     net.running = False
